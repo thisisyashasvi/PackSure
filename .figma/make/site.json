@@ -1,0 +1,10 @@
+{
+  "description": "Scan packaged products to verify compliance with Indian labeling laws, detect issues like expiry or overpricing, and submit evidence-based complaints easily.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
