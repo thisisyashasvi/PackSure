@@ -150,7 +150,7 @@ export async function getAvailableVideoDevices(): Promise<VideoDeviceOption[]> {
 
 export interface BarcodeScannerController {
   stop: () => void
-  switchCamera: (deviceId: string) => Promise<void>
+  switchCamera: (deviceId?: string, facing?: "environment" | "user") => Promise<void>
 }
 
 /**
@@ -232,18 +232,31 @@ export function startLiveBarcodeScanner(
         currentStream = null
       }
 
+      const videoConstraints: MediaTrackConstraints = (deviceId && deviceId.trim().length > 0)
+        ? { deviceId: { exact: deviceId } }
+        : {
+            facingMode: { ideal: facing },
+            width: { ideal: 1280, min: 640 },
+            height: { ideal: 720, min: 480 },
+          }
+
       const constraints: MediaStreamConstraints = {
-        video: deviceId
-          ? { deviceId: { exact: deviceId } }
-          : {
-              facingMode: facing,
-              width: { ideal: 1280, min: 640 },
-              height: { ideal: 720, min: 480 },
-            },
+        video: videoConstraints,
         audio: false,
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints)
+      let stream: MediaStream
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints)
+      } catch (e) {
+        // Fallback constraint if exact deviceId or high resolution fails
+        console.warn("Primary camera constraint failed, attempting fallback:", e)
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: facing },
+          audio: false,
+        })
+      }
+
       currentStream = stream
       videoElement.srcObject = stream
       await videoElement.play()
@@ -368,8 +381,8 @@ export function startLiveBarcodeScanner(
         videoElement.srcObject = null
       }
     },
-    switchCamera: async (newDeviceId: string) => {
-      await startStream(newDeviceId, preferredFacingMode)
+    switchCamera: async (newDeviceId?: string, facing?: "environment" | "user") => {
+      await startStream(newDeviceId, facing || preferredFacingMode)
     },
   }
 }

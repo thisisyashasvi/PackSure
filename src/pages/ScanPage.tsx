@@ -176,12 +176,22 @@ export const ScanPage: React.FC<ScanPageProps> = ({
   useEffect(() => {
     getAvailableVideoDevices().then((devs) => {
       setVideoDevices(devs)
-      if (devs.length > 0) {
-        setSelectedBarcodeDeviceId(devs[0].deviceId)
-        setSelectedLabelDeviceId(devs.length > 1 ? devs[1].deviceId : devs[0].deviceId)
-      }
     })
   }, [])
+
+  // Flip Barcode Camera (Toggles between Rear and Front)
+  const handleFlipBarcodeCamera = () => {
+    const nextFacing = barcodeFacing === "environment" ? "user" : "environment"
+    setBarcodeFacing(nextFacing)
+    setSelectedBarcodeDeviceId("")
+  }
+
+  // Flip Label Camera (Toggles between Rear and Front)
+  const handleFlipLabelCamera = () => {
+    const nextFacing = labelFacing === "environment" ? "user" : "environment"
+    setLabelFacing(nextFacing)
+    setSelectedLabelDeviceId("")
+  }
 
   // Start Barcode Scanner
   const startBarcodeScannerInstance = () => {
@@ -277,15 +287,29 @@ export const ScanPage: React.FC<ScanPageProps> = ({
         const constraints: MediaStreamConstraints = {
           video: selectedLabelDeviceId
             ? { deviceId: { exact: selectedLabelDeviceId } }
-            : { facingMode: labelFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
+            : { facingMode: { ideal: labelFacing }, width: { ideal: 1280 }, height: { ideal: 720 } },
           audio: false,
         }
-        const stream = await navigator.mediaDevices.getUserMedia(constraints)
+        let stream: MediaStream
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints)
+        } catch (e) {
+          console.warn("Primary label camera constraint failed, attempting fallback:", e)
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: labelFacing },
+            audio: false,
+          })
+        }
         labelStreamRef.current = stream
         if (labelVideoRef.current) {
           labelVideoRef.current.srcObject = stream
           await labelVideoRef.current.play()
         }
+
+        // Refresh device list now that camera permissions are granted
+        getAvailableVideoDevices().then((devs) => {
+          if (devs.length > 0) setVideoDevices(devs)
+        })
       }
     } catch (err: any) {
       console.warn("Label camera stream notice:", err)
@@ -975,7 +999,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
 
                       <button
                         type="button"
-                        onClick={() => setLabelFacing(labelFacing === "environment" ? "user" : "environment")}
+                        onClick={handleFlipLabelCamera}
                         style={{
                           background: "rgba(255, 255, 255, 0.2)",
                           color: "#fff",
@@ -986,7 +1010,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                           cursor: "pointer",
                         }}
                       >
-                        🔄 Flip
+                        🔄 Flip ({labelFacing === "environment" ? "Rear" : "Front"})
                       </button>
                     </div>
                   </div>
@@ -1181,10 +1205,36 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                   </div>
                 </div>
 
-                <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
+                  {videoDevices.length > 1 && (
+                    <select
+                      value={selectedBarcodeDeviceId}
+                      onChange={(e) => setSelectedBarcodeDeviceId(e.target.value)}
+                      title="Select Camera Device"
+                      style={{
+                        background: "#f8fafc",
+                        border: "1px solid #cbd5e1",
+                        borderRadius: "6px",
+                        padding: "5px 8px",
+                        fontSize: "11px",
+                        fontWeight: 500,
+                        color: "#334155",
+                        cursor: "pointer",
+                        maxWidth: "140px",
+                      }}
+                    >
+                      <option value="">Auto ({barcodeFacing === "environment" ? "Rear" : "Front"})</option>
+                      {videoDevices.map((d, i) => (
+                        <option key={d.deviceId || i} value={d.deviceId}>
+                          {d.label || `Camera ${i + 1}`}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
                   <button
                     type="button"
-                    onClick={() => setBarcodeFacing(barcodeFacing === "environment" ? "user" : "environment")}
+                    onClick={handleFlipBarcodeCamera}
                     style={{
                       background: "#f1f5f9",
                       border: "1px solid #cbd5e1",
@@ -1196,7 +1246,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                       cursor: "pointer",
                     }}
                   >
-                    🔄 Flip Camera
+                    🔄 Flip ({barcodeFacing === "environment" ? "Rear" : "Front"})
                   </button>
                   {isBarcodeCamActive ? (
                     <button
