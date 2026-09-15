@@ -1,33 +1,34 @@
 import { ProductData, ComplaintData, TruthScoreBreakdown, ScoreFactor, PriorityEvaluation, PriorityLevel } from "../types"
 
 /**
- * 1. Improved Package Truth Score Predictor (0–100)
- * Evaluates statutory compliance factors and generates explainable deductions/bonuses.
+ * 1. Improved Package Complaint Risk Score Predictor (0–100)
+ * Evaluates statutory non-compliance factors where a HIGHER score indicates
+ * HIGHER risk / HIGHER likelihood of consumer grievance and enforcement action.
  */
 export function calculateTruthScore(
   product: ProductData,
   communityReportsCount: number = 0
 ): TruthScoreBreakdown {
   const factors: ScoreFactor[] = []
-  let totalScore = 100
+  let riskScore = 0
 
   const violations = product.violations || []
   const hasViolation = (v: string) => violations.includes(v as any)
 
-  // 1. Product Expired (-40)
+  // 1. Product Expired (+40 Risk)
   const isExpired = hasViolation("expired") || (product.expiryDate && new Date(product.expiryDate) < new Date("2026-09-01"))
   if (isExpired) {
     factors.push({
       id: "expired",
       title: "Product Expired",
-      points: -40,
-      explanation: `−40: Product expired past declared date (${product.expiryDate || "Expired"}). Selling expired goods violates FSSAI & LMPC Rules.`,
+      points: 40,
+      explanation: `+40: Product expired past declared date (${product.expiryDate || "Expired"}). Immediate consumer health hazard under FSSAI & LMPC Rules.`,
       type: "deduction",
     })
-    totalScore -= 40
+    riskScore += 40
   }
 
-  // 2. Expiry within 7 days (-15)
+  // 2. Expiry within 7 days (+15 Risk)
   if (!isExpired && product.expiryDate) {
     const expTime = new Date(product.expiryDate).getTime()
     const nowTime = new Date("2026-09-14").getTime()
@@ -36,15 +37,15 @@ export function calculateTruthScore(
       factors.push({
         id: "expiring_soon",
         title: "Expiring Within 7 Days",
-        points: -15,
-        explanation: `−15: Commodity expires in ${diffDays} days (${product.expiryDate}). Fast-turnover scrutiny required.`,
+        points: 15,
+        explanation: `+15: Commodity expires in ${diffDays} days (${product.expiryDate}). Fast-turnover shelf scrutiny recommended.`,
         type: "deduction",
       })
-      totalScore -= 15
+      riskScore += 15
     }
   }
 
-  // 3. Selling price above MRP (-30)
+  // 3. Selling price above MRP (+30 Risk)
   const isOvercharging =
     hasViolation("overcharging") ||
     (product.sellingPrice !== undefined && product.mrp !== null && product.sellingPrice > product.mrp)
@@ -52,80 +53,80 @@ export function calculateTruthScore(
     const diff = (product.sellingPrice || 0) - (product.mrp || 0)
     factors.push({
       id: "overcharging",
-      title: "Selling Price Above MRP",
-      points: -30,
-      explanation: `−30: Shop price ₹${product.sellingPrice || 0} is higher than printed MRP ₹${product.mrp || 0} (+₹${diff.toFixed(2)} surcharge).`,
+      title: "Selling Price Above MRP (Overcharging)",
+      points: 30,
+      explanation: `+30: Shop price ₹${product.sellingPrice || 0} is higher than printed MRP ₹${product.mrp || 0} (+₹${diff.toFixed(2)} illegal surcharge).`,
       type: "deduction",
     })
-    totalScore -= 30
+    riskScore += 30
   }
 
-  // 4. MRP missing (-25)
+  // 4. MRP missing (+25 Risk)
   const isMrpMissing = hasViolation("mrp_missing") || product.mrp === null || !product.mrpDisplay || product.mrpDisplay.includes("Missing")
   if (isMrpMissing) {
     factors.push({
       id: "mrp_missing",
-      title: "Statutory MRP Missing",
-      points: -25,
-      explanation: "−25: Maximum Retail Price (MRP) inclusive of all taxes is not declared on package.",
+      title: "Statutory MRP Missing / Illegible",
+      points: 25,
+      explanation: "+25: Maximum Retail Price (MRP) inclusive of all taxes is absent on package violating Rule 6(1)(e).",
       type: "deduction",
     })
-    totalScore -= 25
+    riskScore += 25
   }
 
-  // 5. Net Quantity Missing (-10)
+  // 5. Net Quantity Missing (+15 Risk)
   const isNetQtyMissing = hasViolation("net_qty_missing") || !product.netQuantity || product.netQuantity.includes("Missing")
   if (isNetQtyMissing) {
     factors.push({
       id: "net_qty_missing",
       title: "Net Quantity Missing",
-      points: -10,
-      explanation: "−10: Standard net quantity (weight, volume, or piece count) is missing under Rule 6(1)(c).",
+      points: 15,
+      explanation: "+15: Standard net quantity (weight, volume, or piece count) is missing under Rule 6(1)(c).",
       type: "deduction",
     })
-    totalScore -= 10
+    riskScore += 15
   }
 
-  // 6. Batch Number Missing (-10)
+  // 6. Batch Number Missing (+10 Risk)
   const isBatchMissing = !product.batchNumber || product.batchNumber.includes("Missing") || product.batchNumber.includes("Not Declared")
   if (isBatchMissing) {
     factors.push({
       id: "batch_missing",
       title: "Batch / Lot Number Missing",
-      points: -10,
-      explanation: "−10: Batch or lot number for quality traceability is missing under Rule 6(1)(e).",
+      points: 10,
+      explanation: "+10: Batch or lot number for quality traceability is missing under Rule 6(1)(e).",
       type: "deduction",
     })
-    totalScore -= 10
+    riskScore += 10
   }
 
-  // 7. Manufacturer Address Missing (-15)
+  // 7. Manufacturer Address Missing (+15 Risk)
   const isMfrMissing = hasViolation("manufacturer_missing") || !product.manufacturerAddress || product.manufacturerAddress.includes("Missing") || product.manufacturerAddress.includes("Not Declared")
   if (isMfrMissing) {
     factors.push({
       id: "manufacturer_missing",
       title: "Manufacturer / Packer Address Missing",
-      points: -15,
-      explanation: "−15: Full name and address of manufacturer or packer is missing under Rule 6(1)(a).",
+      points: 15,
+      explanation: "+15: Full name and address of manufacturer or packer is missing under Rule 6(1)(a).",
       type: "deduction",
     })
-    totalScore -= 15
+    riskScore += 15
   }
 
-  // 8. Customer Care Details Missing (-5)
+  // 8. Customer Care Details Missing (+10 Risk)
   const isConsumerCareMissing = !product.consumerCare || product.consumerCare.includes("Missing") || product.consumerCare.includes("Not Declared")
   if (isConsumerCareMissing) {
     factors.push({
       id: "consumer_care_missing",
       title: "Consumer Care Helpline Missing",
-      points: -5,
-      explanation: "−5: Reachable customer care contact or grievance email is missing under Rule 6(1)(f).",
+      points: 10,
+      explanation: "+10: Reachable customer care contact or grievance email is missing under Rule 6(1)(f).",
       type: "deduction",
     })
-    totalScore -= 5
+    riskScore += 10
   }
 
-  // 9. Font Height Violation under Rule 7/9 (-15)
+  // 9. Font Height Violation under Rule 7/9 (+15 Risk)
   const hasFontViolation = hasViolation("font_size_violation") || (product.fontCompliance && !product.fontCompliance.fontHeightCompliant)
   if (hasFontViolation) {
     const minH = product.fontCompliance?.prescribedMinHeightMm || 2.0
@@ -133,109 +134,109 @@ export function calculateTruthScore(
     factors.push({
       id: "font_size_violation",
       title: "Statutory Font-Height Non-Compliance",
-      points: -15,
-      explanation: `−15: Numeral font height (${detH} mm) is smaller than statutory minimum (${minH} mm) prescribed under Rule 7 & Table 1 of LMPC Rules.`,
+      points: 15,
+      explanation: `+15: Numeral font height (${detH} mm) is smaller than statutory minimum (${minH} mm) prescribed under Table 1 of Rule 7 & 9.`,
       type: "deduction",
     })
-    totalScore -= 15
+    riskScore += 15
   }
 
-  // 10. Non-Standard Metric Units (-10)
+  // 10. Non-Standard Metric Units (+10 Risk)
   const hasNonStandardUnits = hasViolation("non_standard_units") || (product.fontCompliance && product.fontCompliance.nonStandardUnitsDetected.length > 0)
   if (hasNonStandardUnits) {
     const unitList = product.fontCompliance?.nonStandardUnitsDetected.join(", ") || "Use of non-standard abbreviations (e.g. gms, kilo, ltr)"
     factors.push({
       id: "non_standard_units",
       title: "Non-Standard Unit Symbols",
-      points: -10,
-      explanation: `−10: Packaging uses prohibited/non-standard metric abbreviations (${unitList}) violating Rule 11.`,
+      points: 10,
+      explanation: `+10: Packaging uses prohibited/non-standard metric abbreviations (${unitList}) violating Rule 11.`,
       type: "deduction",
     })
-    totalScore -= 10
+    riskScore += 10
   }
 
-  // 11. Low OCR Scan Quality (-10)
+  // 11. Low OCR Scan Quality (+10 Risk)
   if (product.ocrConfidence !== undefined && product.ocrConfidence < 60) {
     factors.push({
       id: "low_ocr",
       title: "Low OCR Scan Confidence",
-      points: -10,
-      explanation: `−10: OCR label reading confidence is ${product.ocrConfidence.toFixed(1)}% (< 60%). Re-scan recommended.`,
+      points: 10,
+      explanation: `+10: OCR label reading confidence is ${product.ocrConfidence.toFixed(1)}% (< 60%). Re-scan recommended.`,
       type: "deduction",
     })
-    totalScore -= 10
+    riskScore += 10
   }
 
-  // 12. Possible Label Tampering (-20)
+  // 12. Possible Label Tampering (+25 Risk)
   if (product.rawOcrText && (product.rawOcrText.includes("TAMPERED") || product.rawOcrText.includes("STICKER OVER") || product.alertMessage?.includes("Tampered"))) {
     factors.push({
       id: "tampered_label",
       title: "Possible Label Tampering",
-      points: -20,
-      explanation: "−20: Suspected over-stickering or tampered date/price markings detected.",
+      points: 25,
+      explanation: "+25: Suspected over-stickering or tampered date/price markings detected.",
       type: "deduction",
     })
-    totalScore -= 20
+    riskScore += 25
   }
 
-  // 13. Repeated Community Complaints (-5 to -20)
+  // 13. Repeated Community Complaints (+5 to +20 Risk)
   if (communityReportsCount > 0) {
-    let penalty = -5
-    if (communityReportsCount >= 5) penalty = -20
-    else if (communityReportsCount >= 3) penalty = -10
+    let penalty = 5
+    if (communityReportsCount >= 5) penalty = 20
+    else if (communityReportsCount >= 3) penalty = 10
 
     factors.push({
       id: "community_complaints",
       title: "Community Grievance History",
       points: penalty,
-      explanation: `${penalty}: ${communityReportsCount} previous grievance report(s) logged by consumers for this commodity/outlet.`,
+      explanation: `+${penalty}: ${communityReportsCount} previous grievance report(s) logged by consumers for this commodity/outlet.`,
       type: "deduction",
     })
-    totalScore += penalty
+    riskScore += penalty
   }
 
-  // Positive Confidence Bonuses
-  // A. Barcode matches registered catalog product (+5)
+  // Positive Compliance Credits (Lowers Complaint Risk)
+  // A. Barcode matches registered catalog product (-5 Risk)
   if (product.barcode && product.barcode.length >= 8) {
     factors.push({
       id: "known_barcode",
       title: "Registered GS1 Barcode Match",
-      points: 5,
-      explanation: "+5: Barcode successfully verified against national commodity master registry.",
+      points: -5,
+      explanation: "−5: Barcode successfully verified against national commodity master registry.",
       type: "bonus",
     })
-    totalScore += 5
+    riskScore -= 5
   }
 
-  // B. All required fields detected clearly (+5)
+  // B. All required fields detected clearly (-5 Risk)
   const failedDeclarations = product.declarations ? product.declarations.filter((d) => d.status === "fail") : []
   if (failedDeclarations.length === 0 && !isExpired && !isOvercharging && !isMrpMissing) {
     factors.push({
       id: "all_declarations_passed",
       title: "All Statutory Declarations Verified",
-      points: 5,
-      explanation: "+5: All 7 mandatory statutory declarations under LMPC Rule 6(1) verified with clear OCR fidelity.",
+      points: -5,
+      explanation: "−5: All 7 mandatory statutory declarations under LMPC Rule 6(1) verified with clear OCR fidelity.",
       type: "bonus",
     })
-    totalScore += 5
+    riskScore -= 5
   }
 
   // Clamp final score between 0 and 100
-  const finalScore = Math.max(0, Math.min(100, totalScore))
+  const finalScore = Math.max(0, Math.min(100, riskScore))
 
-  // Determine Category
+  // Determine Category: HIGH score means LIKELY TO COMPLAINT
   let category: "Likely Compliant" | "Needs Attention" | "Possible Violation" = "Likely Compliant"
   let categoryColor: "green" | "amber" | "red" = "green"
 
-  if (finalScore >= 80) {
-    category = "Likely Compliant"
-    categoryColor = "green"
-  } else if (finalScore >= 50) {
+  if (finalScore >= 50) {
+    category = "Possible Violation"
+    categoryColor = "red"
+  } else if (finalScore >= 25) {
     category = "Needs Attention"
     categoryColor = "amber"
   } else {
-    category = "Possible Violation"
-    categoryColor = "red"
+    category = "Likely Compliant"
+    categoryColor = "green"
   }
 
   return {

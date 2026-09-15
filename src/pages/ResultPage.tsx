@@ -79,9 +79,10 @@ export const ResultPage: React.FC<ResultPageProps> = ({
 
   const isViolation =
     truthScore.category === "Possible Violation" ||
+    truthScore.category === "Needs Attention" ||
     currentProduct.complianceStatus === "Violation Detected" ||
     currentProduct.complianceStatus === "Critical Warning" ||
-    truthScore.score < 80 ||
+    truthScore.score >= 25 ||
     !fontReport.fontHeightCompliant
 
   // Warning Cards Generator for the 5 Specific Cases
@@ -124,7 +125,7 @@ export const ResultPage: React.FC<ResultPageProps> = ({
                 onClick={handleReportIssue}
                 style={{ color: "#8e5709", fontWeight: 700, fontSize: "11px", marginTop: "6px", display: "inline-flex", alignItems: "center", gap: "4px" }}
               >
-                Report missing MRP violation <Icon name="arrow" size={13} />
+                Report missing MRP <Icon name="arrow" size={13} />
               </button>
             </div>
           </div>
@@ -135,113 +136,102 @@ export const ResultPage: React.FC<ResultPageProps> = ({
           <div className="warning-card" style={{ borderLeft: "4px solid #bf7914", background: "#fdf8ee" }}>
             <Icon name="alert" style={{ color: "#bf7914" }} />
             <div>
-              <h3 style={{ color: "#8e5709" }}>Net Quantity Missing</h3>
+              <h3 style={{ color: "#8e5709" }}>Net Quantity Not Declared</h3>
               <p>
-                Standard metric declaration of weight/measure is missing. Violation of Rule 6(1)(c) &amp; Second Schedule of Legal Metrology Rules.
+                Standard weight or measure declaration is absent. Packaged goods must clearly declare net contents in metric units under Rule 6(1)(c).
               </p>
+              <button
+                className="plain"
+                onClick={handleReportIssue}
+                style={{ color: "#8e5709", fontWeight: 700, fontSize: "11px", marginTop: "6px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+              >
+                Report quantity defect <Icon name="arrow" size={13} />
+              </button>
             </div>
           </div>
         )}
 
-        {/* Warning 4: Selling Price Above MRP (Overcharging) */}
+        {/* Warning 4: Overcharging above MRP */}
         {violations.includes("overcharging") && (
           <div className="warning-card" style={{ borderLeft: "4px solid #c9484d", background: "#fdf1f1" }}>
             <Icon name="alert" style={{ color: "#c9484d" }} />
             <div>
-              <h3 style={{ color: "#a52d33" }}>Selling Price Above MRP (Overcharging)</h3>
+              <h3 style={{ color: "#a52d33" }}>Overcharging Above Printed MRP</h3>
               <p>
-                Package MRP is <b>{currentProduct.mrpDisplay}</b>, but charged selling price is <b>₹{currentProduct.sellingPrice?.toFixed(2)}</b>. Charging above MRP or dual pricing violates Rule 18(2) of LMPC Rules.
+                Retailer charged <b>₹{currentProduct.sellingPrice?.toFixed(2)}</b> against maximum retail price of <b>{currentProduct.mrpDisplay}</b>. Penalized under Section 36(1) of LM Act.
               </p>
               <button
                 className="plain"
                 onClick={handleReportIssue}
                 style={{ color: "#a52d33", fontWeight: 700, fontSize: "11px", marginTop: "6px", display: "inline-flex", alignItems: "center", gap: "4px" }}
               >
-                Lodge overcharging grievance <Icon name="arrow" size={13} />
+                File overcharging grievance <Icon name="arrow" size={13} />
               </button>
             </div>
           </div>
         )}
 
-        {/* Warning 5: Manufacturer Details Missing */}
+        {/* Warning 5: Missing Manufacturer Details */}
         {violations.includes("manufacturer_missing") && (
-          <div className="warning-card" style={{ borderLeft: "4px solid #c9484d", background: "#fdf1f1" }}>
-            <Icon name="alert" style={{ color: "#c9484d" }} />
+          <div className="warning-card" style={{ borderLeft: "4px solid #bf7914", background: "#fdf8ee" }}>
+            <Icon name="alert" style={{ color: "#bf7914" }} />
             <div>
-              <h3 style={{ color: "#a52d33" }}>Manufacturer Details Missing</h3>
+              <h3 style={{ color: "#8e5709" }}>Missing Manufacturer Identity</h3>
               <p>
-                Name and complete address of manufacturer/packer or importer is not declared. Unidentified commodities cannot be legally distributed under Rule 6(1)(a).
+                Name and complete address of the manufacturer/packer is missing. Pre-packaged commodities without maker identity violate Rule 6(1)(a).
               </p>
+              <button
+                className="plain"
+                onClick={handleReportIssue}
+                style={{ color: "#8e5709", fontWeight: 700, fontSize: "11px", marginTop: "6px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+              >
+                Report unlabelled package <Icon name="arrow" size={13} />
+              </button>
             </div>
           </div>
         )}
-
-        {/* Safe / Compliant State Banner */}
-        {!isViolation && (
-          <div className="safe-card">
-            <Icon name="shield" size={24} />
-            <h3>Mandatory Rules Verified</h3>
-            <p>
-              All 7 statutory declarations required under the Legal Metrology (Packaged Commodities) Rules, 2011 appear present, legible, and internally consistent.
-            </p>
-            <div style={{ marginTop: "14px", fontSize: "11px", color: "#117c70", display: "flex", alignItems: "center", gap: "6px" }}>
-              <Icon name="check" size={15} /> Valid Barcode: <b>{currentProduct.barcode}</b>
-            </div>
-          </div>
-        )}
-
-        {/* Consumer Rights Quick Card */}
-        <div style={{ background: "#f4f8fa", borderRadius: "10px", padding: "16px", border: "1px solid #d9e3e9", fontSize: "12px" }}>
-          <div style={{ fontWeight: 700, color: "#102b4e", marginBottom: "4px" }}>
-            Consumer Tip:
-          </div>
-          <p style={{ color: "#65758a", margin: 0, lineHeight: 1.45 }}>
-            Always insist on a printed GST retail invoice showing the product batch and MRP when buying packaged goods.
-          </p>
-        </div>
       </aside>
     )
   }
 
   return (
-    <main className="page-shell result-page">
-      {/* Breadcrumb */}
+    <main className="page-shell">
+      {/* Breadcrumb Navigation */}
       <div className="crumb">
         <button className="plain" onClick={() => setPage("home")}>Home</button>
         <Icon name="chevron" size={14} />
-        <button className="plain" onClick={() => setPage("scan")}>Scan product</button>
+        <button className="plain" onClick={() => setPage("scan")}>Scan</button>
         <Icon name="chevron" size={14} />
-        <span>Compliance Result</span>
+        <span>Verification Dossier</span>
       </div>
 
-      {/* Header & Scenario Switcher */}
-      <div className="result-title">
-        <div>
-          <div className="section-label">LEGAL METROLOGY COMPLIANCE VERIFICATION</div>
-          <h1>{isViolation ? "This package needs a closer look." : "Here’s what we found."}</h1>
-          <p style={{ color: "#647589", fontSize: "14px", marginTop: "4px" }}>
-            Automated evaluation against Legal Metrology (Packaged Commodities) Rules, 2011.
-          </p>
+      {/* Top Banner with Scenario Switcher for Evaluation */}
+      <div className="results-top-strip">
+        <div className="crumb-wrap">
+          <Badge type="blue">LMPC ACT 2009 AUDIT REPORT</Badge>
+          <span style={{ fontSize: "12px", color: "#607284" }}>
+            Dossier Reference: <b>DOS-2026-{currentProduct.id.slice(0, 6).toUpperCase()}</b>
+          </span>
         </div>
 
-        {/* Interactive Scenario Toggles for Reviewers (Officer / Admin Only) */}
+        {/* Interactive Scenario Switcher */}
         {isStaff && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px" }}>
-            <span style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "0.5px", color: "#6d7f91" }}>
-              TEST COMPLIANCE STATES (OFFICER / ADMIN ONLY):
+          <div className="scenario-switcher">
+            <span style={{ fontSize: "11px", fontWeight: 700, color: "#4d647a" }}>
+              DEMO VIOLATION SCENARIOS:
             </span>
-            <div className="state-toggle" style={{ flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <div className="scenario-buttons">
               <button
-                className={currentProduct.id === "britannia-good-day" ? "selected good" : ""}
+                className={currentProduct.violations.includes("none") ? "selected" : ""}
                 onClick={() => handleScenarioChange("compliant")}
               >
-                ✓ Britannia Good Day (Compliant)
+                ✓ Compliant
               </button>
               <button
                 className={currentProduct.violations.includes("expired") ? "selected danger" : ""}
                 onClick={() => handleScenarioChange("expired")}
               >
-                ⚠ Product Expired
+                ⚠ Expired
               </button>
               <button
                 className={currentProduct.violations.includes("mrp_missing") ? "selected danger" : ""}
@@ -395,10 +385,10 @@ export const ResultPage: React.FC<ResultPageProps> = ({
           </div>
           <span>
             {truthScore.category === "Likely Compliant"
-              ? "Likely\nCompliant"
+              ? "Low Risk\n(Compliant)"
               : truthScore.category === "Needs Attention"
-              ? "Needs\nAttention"
-              : "Possible\nViolation"}
+              ? "Moderate Risk\n(Attention)"
+              : "High Risk\n(Complaint)"}
           </span>
         </div>
       </section>
@@ -463,20 +453,20 @@ export const ResultPage: React.FC<ResultPageProps> = ({
         </button>
       </div>
 
-      {/* "Why this score?" Explainable Truth Score Breakdown Panel */}
+      {/* "Why this score?" Explainable Complaint Risk Score Breakdown Panel */}
       {showScoreBreakdown && (
         <section className="score-breakdown-card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
             <div>
               <h3 style={{ fontSize: "14px", color: "#102b4e", margin: 0 }}>
-                Truth Score Calculation Breakdown (Base: 100 Points)
+                Complaint Risk Score Calculation Breakdown (Base: 0 Risk Points)
               </h3>
               <p style={{ fontSize: "12px", color: "#6b7d8e", margin: "2px 0 0" }}>
-                Algorithmic evaluation under the Legal Metrology (Packaged Commodities) Rules, 2011
+                Algorithmic violation risk index: higher score indicates higher probability of consumer complaint / statutory action
               </p>
             </div>
             <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-              <span style={{ fontSize: "11px", color: "#718292" }}>Final Calculated Score:</span>
+              <span style={{ fontSize: "11px", color: "#718292" }}>Final Risk Score:</span>
               <strong style={{ fontSize: "16px", color: truthScore.categoryColor === "green" ? "#0f8e7d" : truthScore.categoryColor === "amber" ? "#ea580c" : "#c9484d" }}>
                 {truthScore.score} / 100
               </strong>
@@ -486,7 +476,7 @@ export const ResultPage: React.FC<ResultPageProps> = ({
           <div style={{ display: "flex", flexDirection: "column" }}>
             {truthScore.factors.length === 0 ? (
               <div style={{ fontSize: "12px", color: "#0f8e7d", padding: "8px 0" }}>
-                ✓ No violations detected. Product meets all statutory packaging declarations.
+                ✓ No violations detected. Product has 0 risk points and meets all statutory packaging declarations.
               </div>
             ) : (
               truthScore.factors.map((f) => (
@@ -500,11 +490,11 @@ export const ResultPage: React.FC<ResultPageProps> = ({
                           fontWeight: 700,
                           padding: "2px 8px",
                           borderRadius: "4px",
-                          background: f.points > 0 ? "#e2f4ec" : f.points <= -25 ? "#fee2e2" : "#ffedd5",
-                          color: f.points > 0 ? "#08705a" : f.points <= -25 ? "#991b1b" : "#c2410c",
+                          background: f.points > 0 ? (f.points >= 25 ? "#fee2e2" : "#ffedd5") : "#e2f4ec",
+                          color: f.points > 0 ? (f.points >= 25 ? "#991b1b" : "#c2410c") : "#08705a",
                         }}
                       >
-                        {f.points > 0 ? `+${f.points} pts` : `${f.points} pts`}
+                        {f.points > 0 ? `+${f.points} risk pts` : `${f.points} risk pts`}
                       </span>
                     </div>
                     <p style={{ margin: "3px 0 0", fontSize: "12px", color: "#54687d" }}>{f.explanation}</p>

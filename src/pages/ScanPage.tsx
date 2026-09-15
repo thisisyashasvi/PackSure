@@ -478,7 +478,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
       matchedProduct.complianceStatus =
         truthScore.category === "Likely Compliant"
           ? "Likely Compliant"
-          : truthScore.score < 50
+          : truthScore.score >= 50
           ? "Critical Warning"
           : "Violation Detected"
 
