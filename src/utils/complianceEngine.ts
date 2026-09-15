@@ -295,12 +295,19 @@ export function calculateComplaintPriority(
   // Selling price above MRP, missing MRP, missing expiry for an expiry-required category, or repeated complaints
   const priceCharged = complaint.priceCharged !== undefined ? Number(complaint.priceCharged) : (product?.sellingPrice || 0)
   const mrp = complaint.mrp !== undefined && complaint.mrp !== null ? Number(complaint.mrp) : (product?.mrp || 0)
-  const isOvercharging = (priceCharged > 0 && mrp > 0 && priceCharged > mrp) || issue.includes("overcharging") || issue.includes("above mrp")
-
-  if (isOvercharging) {
+  
+  if (priceCharged > 0 && mrp > 0 && priceCharged > mrp) {
     return {
       priority: "High",
       explanation: `Priority: High — Selling price is ₹${priceCharged.toFixed(2)}, which is above the detected MRP of ₹${mrp.toFixed(2)} (+₹${(priceCharged - mrp).toFixed(2)} excess surcharge).`,
+      color: "high",
+    }
+  }
+
+  if ((issue.includes("overcharging") || issue.includes("above mrp")) && (priceCharged === 0 || mrp === 0)) {
+    return {
+      priority: "High",
+      explanation: "Priority: High — Reported overcharging above statutory Maximum Retail Price (MRP) under Legal Metrology Act Section 18 / Rule 23.",
       color: "high",
     }
   }
@@ -348,7 +355,15 @@ export function calculateComplaintPriority(
   }
 
   // Rule 4: LOW (Blue / Grey)
-  // Minor label clarity issue, incomplete evidence, or general feedback
+  // Non-overcharging pricing, minor label clarity issue, incomplete evidence, or general feedback
+  if (priceCharged > 0 && mrp > 0 && priceCharged <= mrp && (issue.includes("overcharging") || issue.includes("above mrp"))) {
+    return {
+      priority: "Low",
+      explanation: `Priority: Low — Selling price of ₹${priceCharged.toFixed(2)} is within declared MRP of ₹${mrp.toFixed(2)} (no excess surcharge). No pricing violation detected.`,
+      color: "low",
+    }
+  }
+
   return {
     priority: "Low",
     explanation: "Priority: Low — Minor label legibility defect or routine packaging clarification enquiry.",

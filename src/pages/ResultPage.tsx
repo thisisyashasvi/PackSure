@@ -150,7 +150,7 @@ export const ResultPage: React.FC<ResultPageProps> = ({
     if (currentProduct.violations.includes("net_qty_missing") || !fontReport.fontHeightCompliant) return "Incorrect label"
     if (currentProduct.violations.includes("overcharging")) return "Overcharging above MRP"
     if (currentProduct.violations.includes("manufacturer_missing")) return "Missing manufacturer details"
-    return "Overcharging above MRP"
+    return "Routine inquiry / General feedback"
   }
 
   // Priority Assessment
