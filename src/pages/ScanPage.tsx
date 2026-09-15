@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef } from "react"
-import { Page, ProductData, User, ScanRecord, InspectionRecord, ImageQualityReport, ExtractedEntities } from "../types"
+import { Page, ProductData, User, ScanRecord, InspectionRecord, ImageQualityReport, ExtractedEntities, TargetedOcrResult } from "../types"
 import { Icon, Button, Badge } from "../components/Icons"
 import { DEFAULT_PRODUCT } from "../data/sampleProducts"
 import { sqlDb } from "../db/sqlEngine"
 import { firebaseService } from "../firebase/firebaseService"
 import { analyzeFontCompliance, generateStatutoryCitations, deriveEnforcementRecommendation } from "../utils/fontCompliance"
 import { calculateTruthScore } from "../utils/complianceEngine"
-import { extractTextWithTesseract, analyzeImageQuality, parseStatutoryEntities } from "../utils/ocrScanner"
+import { extractTextWithTesseract, analyzeImageQuality, parseStatutoryEntities, extractTargetedComplianceFields } from "../utils/ocrScanner"
 
 interface ScanPageProps {
   setPage: (page: Page) => void
@@ -232,27 +232,81 @@ export const ScanPage: React.FC<ScanPageProps> = ({
     }
   }, [barcodeInput, setSelectedProduct])
 
-  // Synchronize Form Fields whenever Extracted Entities update
-  const syncEntitiesToForm = (entities: ExtractedEntities) => {
+  // Targeted OCR Compliance State
+  const [targetedOcr, setTargetedOcr] = useState<TargetedOcrResult | null>(null)
+  const [showRawOcrDebug, setShowRawOcrDebug] = useState<boolean>(false)
+
+  // Synchronize Form Fields whenever Extracted Entities or Targeted OCR update
+  const syncEntitiesToForm = (entities: ExtractedEntities, targeted?: TargetedOcrResult) => {
     if (entities.productName) setProductNameInput(entities.productName)
     if (entities.brand) setBrandInput(entities.brand)
-    if (entities.mrp !== undefined) setMrpInput(String(entities.mrp))
-    if (entities.netQuantity) setNetQuantityInput(entities.netQuantity)
-    if (entities.mfgDate) setMfgDateInput(entities.mfgDate)
-    if (entities.expiryDate) setExpiryDateInput(entities.expiryDate)
+    if (targeted?.mrp) setMrpInput(targeted.mrp)
+    else if (entities.mrp !== undefined) setMrpInput(String(entities.mrp))
+
+    if (targeted?.netWeight) setNetQuantityInput(targeted.netWeight)
+    else if (entities.netQuantity) setNetQuantityInput(entities.netQuantity)
+
+    if (targeted?.packagingDate) setMfgDateInput(targeted.packagingDate)
+    else if (entities.mfgDate) setMfgDateInput(entities.mfgDate)
+
+    if (targeted?.expiryDate) setExpiryDateInput(targeted.expiryDate)
+    else if (entities.expiryDate) setExpiryDateInput(entities.expiryDate)
+
+    if (targeted?.packagedBy) setManufacturerNameInput(targeted.packagedBy)
+    else if (entities.manufacturerName) setManufacturerNameInput(entities.manufacturerName)
+
     if (entities.batchNumber) setBatchNumberInput(entities.batchNumber)
-    if (entities.manufacturerName) setManufacturerNameInput(entities.manufacturerName)
     if (entities.consumerCare) setConsumerCareInput(entities.consumerCare)
     if (entities.countryOfOrigin) setCountryOfOriginInput(entities.countryOfOrigin)
     if (entities.barcode) setBarcodeInput(entities.barcode)
   }
 
+  // Update a specific targeted field inline with confidence bump
+  const updateTargetedField = (
+    field: "packagingDate" | "expiryDate" | "mrp" | "netWeight" | "packagedBy",
+    value: string
+  ) => {
+    setTargetedOcr((prev) => {
+      const base: TargetedOcrResult = prev || {
+        packagingDate: null,
+        expiryDate: null,
+        mrp: null,
+        netWeight: null,
+        packagedBy: null,
+        confidence: { packagingDate: 0, expiryDate: 0, mrp: 0, netWeight: 0, packagedBy: 0 },
+        rawMatches: { packagingDate: null, expiryDate: null, mrp: null, netWeight: null, packagedBy: null },
+        rawOcrText: rawOcrText,
+        overallConfidence: ocrConfidence,
+      }
+      return {
+        ...base,
+        [field]: value.trim() ? value.trim() : null,
+        confidence: {
+          ...base.confidence,
+          [field]: value.trim() ? 95 : 0,
+        },
+        rawMatches: {
+          ...base.rawMatches,
+          [field]: value.trim() ? `User Verified: ${value.trim()}` : null,
+        },
+      }
+    })
+
+    if (field === "packagingDate") setMfgDateInput(value)
+    else if (field === "expiryDate") setExpiryDateInput(value)
+    else if (field === "mrp") setMrpInput(value)
+    else if (field === "netWeight") setNetQuantityInput(value)
+    else if (field === "packagedBy") setManufacturerNameInput(value)
+  }
+
   // Handle Live OCR Text Edits in the Textarea
   const handleOcrTextChange = (newText: string) => {
     setRawOcrText(newText)
+    const updatedTargeted = extractTargetedComplianceFields(newText, ocrConfidence)
     const updatedEntities = parseStatutoryEntities(newText)
     setExtractedEntities(updatedEntities)
-    syncEntitiesToForm(updatedEntities)
+    setTargetedOcr(updatedTargeted)
+    syncEntitiesToForm(updatedEntities, updatedTargeted)
   }
 
   // Process an image with Quality check and Tesseract OCR
@@ -280,7 +334,8 @@ export const ScanPage: React.FC<ScanPageProps> = ({
         setRawOcrText(ocrResult.rawText)
         setOcrConfidence(ocrResult.confidence)
         setExtractedEntities(ocrResult.entities)
-        syncEntitiesToForm(ocrResult.entities)
+        setTargetedOcr(ocrResult.targeted)
+        syncEntitiesToForm(ocrResult.entities, ocrResult.targeted)
       } catch (err) {
         console.error("OCR Extraction failed:", err)
       } finally {
@@ -335,6 +390,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
     setRawOcrText("")
     setQualityReport(null)
     setExtractedEntities({})
+    setTargetedOcr(null)
     setUploadedFiles([])
     setMethod("photo")
   }
@@ -345,9 +401,11 @@ export const ScanPage: React.FC<ScanPageProps> = ({
     setImageFileName(`${preset.name.toLowerCase().replace(/\s+/g, "_")}.jpg`)
     setRawOcrText(preset.rawText)
     setOcrConfidence(96)
+    const targeted = extractTargetedComplianceFields(preset.rawText, 96)
     const entities = parseStatutoryEntities(preset.rawText)
     setExtractedEntities(entities)
-    syncEntitiesToForm(entities)
+    setTargetedOcr(targeted)
+    syncEntitiesToForm(entities, targeted)
     setQualityReport({
       isBlurry: false,
       blurScore: 92,
@@ -386,8 +444,16 @@ export const ScanPage: React.FC<ScanPageProps> = ({
         ? customCategoryName.trim()
         : (selectedCategory || "Food & Beverages")
 
-      const finalMrp = mrpInput ? parseFloat(mrpInput) : (matchedProduct?.mrp || 30)
-      const finalNetQty = netQuantityInput || (matchedProduct?.netQuantity || "100 g")
+      // Extract final values prioritizing targeted OCR and user edits
+      const finalPackagingDate = targetedOcr?.packagingDate || mfgDateInput || (matchedProduct?.mfgDate || "15 Jun 2026")
+      const finalExpiryDate = targetedOcr?.expiryDate || expiryDateInput || (matchedProduct?.expiryDate || null)
+      const finalMrp = targetedOcr?.mrp
+        ? parseFloat(targetedOcr.mrp)
+        : mrpInput
+        ? parseFloat(mrpInput)
+        : (matchedProduct?.mrp || null)
+      const finalNetQty = targetedOcr?.netWeight || netQuantityInput || (matchedProduct?.netQuantity || "100 g")
+      const finalPackagedBy = targetedOcr?.packagedBy || manufacturerNameInput || (matchedProduct?.manufacturerName || null)
 
       // Font Compliance computation
       const detectedFontMm = detectedFontHeightInput ? parseFloat(detectedFontHeightInput) : 2.4
@@ -400,7 +466,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
           mrp: finalMrp,
           sellingPrice: sellingPriceInput ? parseFloat(sellingPriceInput) : undefined,
           consumerCare: consumerCareInput || matchedProduct?.consumerCare,
-          rawOcrText: rawOcrText || `Net Qty: ${finalNetQty}. MRP: ₹${finalMrp} (inclusive of all taxes). Mfd by: ${manufacturerNameInput || "Packer Details"}. Consumer care: ${consumerCareInput || "1800-000-000"}`,
+          rawOcrText: rawOcrText || `Net Qty: ${finalNetQty}. MRP: ₹${finalMrp || 0} (inclusive of all taxes). Mfd by: ${finalPackagedBy || "Packer Details"}. Consumer care: ${consumerCareInput || "1800-000-000"}`,
         },
         detectedFontMm,
         pdpArea
@@ -409,19 +475,116 @@ export const ScanPage: React.FC<ScanPageProps> = ({
       const violations: any[] = []
       if (!fontReport.fontHeightCompliant) violations.push("font_size_violation")
       if (fontReport.nonStandardUnitsDetected.length > 0) violations.push("non_standard_units")
-      if (!finalMrp) violations.push("mrp_missing")
+      if (finalMrp === null) violations.push("mrp_missing")
       if (!finalNetQty) violations.push("net_qty_missing")
-      if (!manufacturerNameInput && !matchedProduct?.manufacturerName) violations.push("manufacturer_missing")
+      if (!finalPackagedBy && !matchedProduct?.manufacturerName) violations.push("manufacturer_missing")
 
       // Overcharging check
       let enteredSellingPrice: number | undefined = undefined
-      if (sellingPriceInput && finalMrp) {
+      if (sellingPriceInput && finalMrp !== null) {
         const p = parseFloat(sellingPriceInput)
         enteredSellingPrice = p
         if (p > finalMrp) {
           violations.push("overcharging")
         }
       }
+
+      // Check Expiry Date
+      if (finalExpiryDate && !finalExpiryDate.toLowerCase().includes("months from") && !finalExpiryDate.toLowerCase().includes("days from")) {
+        const parsedExp = new Date(finalExpiryDate)
+        if (!isNaN(parsedExp.getTime()) && parsedExp < new Date("2026-09-01")) {
+          violations.push("expired")
+        }
+      }
+
+      const targetedOcrResult: TargetedOcrResult = targetedOcr || {
+        packagingDate: finalPackagingDate,
+        expiryDate: finalExpiryDate,
+        mrp: finalMrp !== null ? finalMrp.toFixed(2) : null,
+        netWeight: finalNetQty,
+        packagedBy: finalPackagedBy,
+        confidence: {
+          packagingDate: finalPackagingDate ? 95 : 0,
+          expiryDate: finalExpiryDate ? 95 : 0,
+          mrp: finalMrp !== null ? 95 : 0,
+          netWeight: finalNetQty ? 95 : 0,
+          packagedBy: finalPackagedBy ? 95 : 0,
+        },
+        rawMatches: {
+          packagingDate: finalPackagingDate,
+          expiryDate: finalExpiryDate,
+          mrp: finalMrp !== null ? `₹${finalMrp.toFixed(2)}` : null,
+          netWeight: finalNetQty,
+          packagedBy: finalPackagedBy,
+        },
+        rawOcrText: rawOcrText,
+        overallConfidence: ocrConfidence,
+      }
+
+      const declarations = [
+        {
+          id: "d1",
+          rule: "Rule 6(1)(a)",
+          label: "Name & Address of Manufacturer / Packer",
+          detectedValue: finalPackagedBy || "Missing / Not Declared",
+          status: finalPackagedBy ? ("pass" as const) : ("fail" as const),
+          note: finalPackagedBy ? undefined : "Reason: Packaged By / Manufactured By could not be verified near maker labels (Rule 6(1)(a)).",
+        },
+        {
+          id: "d2",
+          rule: "Rule 6(1)(aa)",
+          label: "Country of Origin",
+          detectedValue: countryOfOriginInput || "India",
+          status: "pass" as const,
+        },
+        {
+          id: "d3",
+          rule: "Rule 6(1)(c)",
+          label: "Net Quantity (Weight / Measure / Count)",
+          detectedValue: finalNetQty || "Missing / Blank",
+          status: finalNetQty ? (fontReport.nonStandardUnitsDetected.length > 0 ? ("warn" as const) : ("pass" as const)) : ("fail" as const),
+          note: !finalNetQty ? "Reason: Net quantity could not be detected near net weight labels (Rule 6(1)(c))." : undefined,
+        },
+        {
+          id: "d4",
+          rule: "Rule 6(1)(d)",
+          label: "Month & Year of Manufacture / Packing",
+          detectedValue: finalPackagingDate || "Not Declared",
+          status: finalPackagingDate ? ("pass" as const) : ("warn" as const),
+          note: !finalPackagingDate ? "Reason: Packaging Date could not be detected near packaging labels (Rule 6(1)(d))." : undefined,
+        },
+        {
+          id: "d5",
+          rule: "Rule 6(1)(d)",
+          label: "Use By / Best Before / Expiry Date",
+          detectedValue: finalExpiryDate || "Not Declared",
+          status: finalExpiryDate ? (violations.includes("expired") ? ("fail" as const) : ("pass" as const)) : ("warn" as const),
+          note: violations.includes("expired") ? "Reason: Declared expiry date has passed under Section 18 & FSSAI." : (!finalExpiryDate ? "Reason: Expiry date declaration not found." : undefined),
+        },
+        {
+          id: "d6",
+          rule: "Rule 6(1)(e)",
+          label: "Maximum Retail Price (MRP) incl. of all taxes",
+          detectedValue: finalMrp !== null ? `₹${finalMrp.toFixed(2)} (incl. of all taxes)` : "Missing / Illegible",
+          status: finalMrp !== null ? (violations.includes("overcharging") ? ("fail" as const) : ("pass" as const)) : ("fail" as const),
+          note: finalMrp === null ? "Reason: MRP could not be detected near an MRP/price label (Rule 6(1)(e))." : (violations.includes("overcharging") ? `Reason: Charged price ₹${enteredSellingPrice?.toFixed(2)} exceeds printed MRP ₹${finalMrp.toFixed(2)}.` : undefined),
+        },
+        {
+          id: "d7",
+          rule: "Rule 6(1)(f)",
+          label: "Consumer Care Details (Phone / Email)",
+          detectedValue: consumerCareInput || "Not Found",
+          status: consumerCareInput ? ("pass" as const) : ("fail" as const),
+          note: !consumerCareInput ? "Reason: Consumer care helpline or email is absent (Rule 6(1)(f))." : undefined,
+        },
+        {
+          id: "d8",
+          rule: "Rule 6(1)(g)",
+          label: "Batch Number / Lot Code",
+          detectedValue: batchNumberInput || "Not Declared",
+          status: batchNumberInput ? ("pass" as const) : ("warn" as const),
+        },
+      ]
 
       if (matchedProduct) {
         matchedProduct = {
@@ -430,12 +593,16 @@ export const ScanPage: React.FC<ScanPageProps> = ({
           brand: brandInput || matchedProduct.brand,
           category: finalCategory,
           mrp: finalMrp,
-          mrpDisplay: finalMrp ? `₹${finalMrp.toFixed(2)}` : "Missing",
+          mrpDisplay: finalMrp !== null ? `₹${finalMrp.toFixed(2)}` : "Missing",
           netQuantity: finalNetQty,
-          mfgDate: mfgDateInput || matchedProduct.mfgDate,
-          expiryDate: expiryDateInput || matchedProduct.expiryDate,
+          mfgDate: finalPackagingDate,
+          packagingDate: finalPackagingDate,
+          expiryDate: finalExpiryDate,
           batchNumber: batchNumberInput || matchedProduct.batchNumber,
-          manufacturerName: manufacturerNameInput || matchedProduct.manufacturerName,
+          netWeight: finalNetQty,
+          packagedBy: finalPackagedBy,
+          manufacturerName: finalPackagedBy || matchedProduct.manufacturerName,
+          manufacturerAddress: finalPackagedBy || matchedProduct.manufacturerAddress,
           consumerCare: consumerCareInput || matchedProduct.consumerCare,
           countryOfOrigin: countryOfOriginInput || matchedProduct.countryOfOrigin || "India",
           sellingPrice: enteredSellingPrice,
@@ -444,6 +611,8 @@ export const ScanPage: React.FC<ScanPageProps> = ({
           violations: Array.from(new Set([...matchedProduct.violations, ...violations])),
           fontCompliance: fontReport,
           evidenceImages: uploadedFiles.map((f) => f.name),
+          targetedOcr: targetedOcrResult,
+          declarations,
         }
       } else {
         matchedProduct = {
@@ -454,12 +623,16 @@ export const ScanPage: React.FC<ScanPageProps> = ({
           category: finalCategory,
           barcode: barcodeInput.trim() || "8901000000000",
           mrp: finalMrp,
-          mrpDisplay: finalMrp ? `₹${finalMrp.toFixed(2)}` : "Missing",
+          mrpDisplay: finalMrp !== null ? `₹${finalMrp.toFixed(2)}` : "Missing",
           netQuantity: finalNetQty,
-          mfgDate: mfgDateInput || "01 Sep 2026",
-          expiryDate: expiryDateInput || "01 Sep 2027",
+          mfgDate: finalPackagingDate,
+          packagingDate: finalPackagingDate,
+          expiryDate: finalExpiryDate,
           batchNumber: batchNumberInput || "BT-2026-01",
-          manufacturerName: manufacturerNameInput || "National Packagers Ltd",
+          netWeight: finalNetQty,
+          packagedBy: finalPackagedBy || "National Packagers Ltd",
+          manufacturerName: finalPackagedBy || "National Packagers Ltd",
+          manufacturerAddress: finalPackagedBy || "Industrial Area",
           consumerCare: consumerCareInput || "care@commodity.in",
           countryOfOrigin: countryOfOriginInput || "India",
           sellingPrice: enteredSellingPrice,
@@ -468,6 +641,8 @@ export const ScanPage: React.FC<ScanPageProps> = ({
           violations,
           fontCompliance: fontReport,
           evidenceImages: uploadedFiles.map((f) => f.name),
+          targetedOcr: targetedOcrResult,
+          declarations,
         }
         sqlDb.saveProduct(matchedProduct)
       }
@@ -932,77 +1107,312 @@ export const ScanPage: React.FC<ScanPageProps> = ({
             </div>
           )}
 
-          {/* Editable OCR Text Preview Panel (Preserves Line Breaks) */}
-          <div style={{ marginTop: "16px", background: "#fff", border: "1px solid #d9e3ea", borderRadius: "10px", padding: "16px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+          {/* Dedicated "Detected Package Information" Card (5 Targeted Fields) */}
+          <div
+            style={{
+              marginTop: "16px",
+              background: "#fff",
+              border: "2px solid #0f8e7d",
+              borderRadius: "12px",
+              padding: "18px 20px",
+              boxShadow: "0 4px 16px rgba(15, 142, 125, 0.08)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "12px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <Icon name="file" size={16} style={{ color: "#0f8e7d" }} />
-                <h3 style={{ fontSize: "14px", color: "#102b4e", margin: 0 }}>
-                  Extracted OCR Text (Editable Preview)
-                </h3>
+                <span style={{ fontSize: "18px" }}>🎯</span>
+                <div>
+                  <h3 style={{ fontSize: "15px", color: "#102b4e", margin: 0, fontWeight: 700 }}>
+                    Detected Package Information
+                  </h3>
+                  <p style={{ fontSize: "12px", color: "#647589", margin: "2px 0 0" }}>
+                    Targeted statutory compliance extraction for packaged commodities
+                  </p>
+                </div>
               </div>
               <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                <span style={{ fontSize: "11px", color: "#647589" }}>
-                  Confidence: <strong style={{ color: "#0f8e7d" }}>{ocrConfidence}%</strong>
-                </span>
-                <Badge type="blue">Tesseract.js v7</Badge>
+                <Badge type="green">Targeted 5-Field Audit</Badge>
+                {ocrConfidence > 0 && (
+                  <span style={{ fontSize: "11px", color: "#647589" }}>
+                    Confidence: <strong style={{ color: "#0f8e7d" }}>{ocrConfidence}%</strong>
+                  </span>
+                )}
               </div>
             </div>
-            <p style={{ fontSize: "12px", color: "#647589", margin: "0 0 10px" }}>
-              Preserves line breaks and formatting. Edit text directly to correct any optical character recognition errors.
-            </p>
 
-            <textarea
-              value={rawOcrText}
-              onChange={(e) => handleOcrTextChange(e.target.value)}
-              placeholder="Captured label text will appear here with line breaks preserved..."
-              rows={8}
+            <div
               style={{
-                width: "100%",
-                fontFamily: "'DM Mono', monospace",
-                fontSize: "12px",
-                lineHeight: "1.6",
-                padding: "10px",
+                background: "#f0f8f6",
+                border: "1px solid #cce8e2",
                 borderRadius: "8px",
-                border: "1px solid #cbd8e1",
-                background: "#f8fafc",
-                color: "#1e293b",
-                resize: "vertical",
+                padding: "8px 12px",
+                fontSize: "12px",
+                color: "#08705a",
+                marginBottom: "14px",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
               }}
-            />
-
-            {/* Highlighted Detected Statutory Entities Strip */}
-            <div style={{ marginTop: "12px" }}>
-              <span style={{ fontSize: "11px", fontWeight: 700, color: "#102b4e", textTransform: "uppercase" }}>
-                Detected Statutory Declarations (Rule 6):
+            >
+              <Icon name="shield" size={15} style={{ color: "#0f8e7d", flexShrink: 0 }} />
+              <span>
+                OCR targets <b>only</b> the 5 mandatory compliance fields. Fields with <b style={{ color: "#b45309" }}>⚠️ Please verify</b> indicate low confidence (&lt;75%) or missing values; you can edit them directly below before generating the report.
               </span>
-              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "6px" }}>
-                <span style={{ fontSize: "11px", padding: "3px 8px", borderRadius: "4px", background: extractedEntities.productName ? "#e6f4f1" : "#fee2e2", color: extractedEntities.productName ? "#0f8e7d" : "#991b1b", fontWeight: 600 }}>
-                  🏷️ Name: {extractedEntities.productName || "Missing"}
-                </span>
-                <span style={{ fontSize: "11px", padding: "3px 8px", borderRadius: "4px", background: extractedEntities.mrp ? "#e6f4f1" : "#fee2e2", color: extractedEntities.mrp ? "#0f8e7d" : "#991b1b", fontWeight: 600 }}>
-                  💰 MRP: {extractedEntities.mrpDisplay || "Missing"}
-                </span>
-                <span style={{ fontSize: "11px", padding: "3px 8px", borderRadius: "4px", background: extractedEntities.netQuantity ? "#e6f4f1" : "#fee2e2", color: extractedEntities.netQuantity ? "#0f8e7d" : "#991b1b", fontWeight: 600 }}>
-                  ⚖️ Net Qty: {extractedEntities.netQuantity || "Missing"}
-                </span>
-                <span style={{ fontSize: "11px", padding: "3px 8px", borderRadius: "4px", background: extractedEntities.mfgDate ? "#e6f4f1" : "#fef3c7", color: extractedEntities.mfgDate ? "#0f8e7d" : "#92400e", fontWeight: 600 }}>
-                  📅 MFG: {extractedEntities.mfgDate || "Not Found"}
-                </span>
-                <span style={{ fontSize: "11px", padding: "3px 8px", borderRadius: "4px", background: extractedEntities.expiryDate ? "#e6f4f1" : "#fef3c7", color: extractedEntities.expiryDate ? "#0f8e7d" : "#92400e", fontWeight: 600 }}>
-                  ⏳ EXP: {extractedEntities.expiryDate || "Not Found"}
-                </span>
-                <span style={{ fontSize: "11px", padding: "3px 8px", borderRadius: "4px", background: extractedEntities.batchNumber ? "#e6f4f1" : "#fef3c7", color: extractedEntities.batchNumber ? "#0f8e7d" : "#92400e", fontWeight: 600 }}>
-                  🔢 Batch: {extractedEntities.batchNumber || "Not Found"}
-                </span>
-                <span style={{ fontSize: "11px", padding: "3px 8px", borderRadius: "4px", background: extractedEntities.manufacturerName ? "#e6f4f1" : "#fee2e2", color: extractedEntities.manufacturerName ? "#0f8e7d" : "#991b1b", fontWeight: 600 }}>
-                  🏢 MFR: {extractedEntities.manufacturerName ? "Detected" : "Missing"}
-                </span>
-                <span style={{ fontSize: "11px", padding: "3px 8px", borderRadius: "4px", background: extractedEntities.consumerCare ? "#e6f4f1" : "#fef3c7", color: extractedEntities.consumerCare ? "#0f8e7d" : "#92400e", fontWeight: 600 }}>
-                  📞 Care: {extractedEntities.consumerCare ? "Found" : "Missing"}
-                </span>
+            </div>
+
+            {/* 5 Targeted Fields Grid */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              {/* Field 1: Packaging Date */}
+              <div
+                style={{
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: "8px",
+                  padding: "12px 14px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <label style={{ fontSize: "12px", fontWeight: 700, color: "#102b4e", display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span>📅</span> 1. Packaging Date (Rule 6(1)(d))
+                  </label>
+                  {targetedOcr?.packagingDate && targetedOcr.confidence.packagingDate >= 75 ? (
+                    <Badge type="green">✓ {targetedOcr.confidence.packagingDate}% High</Badge>
+                  ) : (
+                    <Badge type="amber">⚠️ Please verify</Badge>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  placeholder="e.g. 15/06/2026 or 12 Aug 2026"
+                  value={targetedOcr?.packagingDate ?? mfgDateInput ?? ""}
+                  onChange={(e) => updateTargetedField("packagingDate", e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "6px",
+                    background: "#fff",
+                    color: "#0f172a",
+                  }}
+                />
+                <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                  <b>Detection:</b> {targetedOcr?.rawMatches.packagingDate ? `Extracted from "${targetedOcr.rawMatches.packagingDate}"` : "Not detected near packaging/mfg date labels"}
+                </div>
+              </div>
+
+              {/* Field 2: Use By / Expiry Date */}
+              <div
+                style={{
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: "8px",
+                  padding: "12px 14px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <label style={{ fontSize: "12px", fontWeight: 700, color: "#102b4e", display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span>⏳</span> 2. Use By / Expiry Date (Rule 6(1)(d))
+                  </label>
+                  {targetedOcr?.expiryDate && targetedOcr.confidence.expiryDate >= 75 ? (
+                    <Badge type="green">✓ {targetedOcr.confidence.expiryDate}% High</Badge>
+                  ) : (
+                    <Badge type="amber">⚠️ Please verify</Badge>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  placeholder="e.g. 15/12/2026 or Best Before 6 Months from Packaging"
+                  value={targetedOcr?.expiryDate ?? expiryDateInput ?? ""}
+                  onChange={(e) => updateTargetedField("expiryDate", e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "6px",
+                    background: "#fff",
+                    color: "#0f172a",
+                  }}
+                />
+                <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                  <b>Detection:</b> {targetedOcr?.rawMatches.expiryDate ? `Extracted from "${targetedOcr.rawMatches.expiryDate}"` : "Not detected near use-by/expiry labels"}
+                </div>
+              </div>
+
+              {/* Field 3: MRP */}
+              <div
+                style={{
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: "8px",
+                  padding: "12px 14px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <label style={{ fontSize: "12px", fontWeight: 700, color: "#102b4e", display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span>💰</span> 3. MRP / Maximum Retail Price (Rule 6(1)(e))
+                  </label>
+                  {targetedOcr?.mrp && targetedOcr.confidence.mrp >= 75 ? (
+                    <Badge type="green">✓ {targetedOcr.confidence.mrp}% High</Badge>
+                  ) : (
+                    <Badge type="amber">⚠️ Please verify</Badge>
+                  )}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span style={{ fontWeight: 700, color: "#64748b", fontSize: "14px" }}>₹</span>
+                  <input
+                    type="text"
+                    placeholder="e.g. 30.00"
+                    value={targetedOcr?.mrp ?? mrpInput ?? ""}
+                    onChange={(e) => updateTargetedField("mrp", e.target.value)}
+                    style={{
+                      flex: 1,
+                      padding: "8px 10px",
+                      fontSize: "13px",
+                      fontWeight: 600,
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "6px",
+                      background: "#fff",
+                      color: "#0f172a",
+                    }}
+                  />
+                </div>
+                <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                  <b>Detection:</b> {targetedOcr?.rawMatches.mrp ? `Extracted from "${targetedOcr.rawMatches.mrp}"` : "No price number isolated near MRP label"}
+                </div>
+              </div>
+
+              {/* Field 4: Net Weight / Net Quantity */}
+              <div
+                style={{
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: "8px",
+                  padding: "12px 14px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <label style={{ fontSize: "12px", fontWeight: 700, color: "#102b4e", display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span>⚖️</span> 4. Net Weight / Net Quantity (Rule 6(1)(c))
+                  </label>
+                  {targetedOcr?.netWeight && targetedOcr.confidence.netWeight >= 75 ? (
+                    <Badge type="green">✓ {targetedOcr.confidence.netWeight}% High</Badge>
+                  ) : (
+                    <Badge type="amber">⚠️ Please verify</Badge>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  placeholder="e.g. 100 g, 500 g, 1 kg, 750 ml, 1 Litre"
+                  value={targetedOcr?.netWeight ?? netQuantityInput ?? ""}
+                  onChange={(e) => updateTargetedField("netWeight", e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "6px",
+                    background: "#fff",
+                    color: "#0f172a",
+                  }}
+                />
+                <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                  <b>Detection:</b> {targetedOcr?.rawMatches.netWeight ? `Extracted from "${targetedOcr.rawMatches.netWeight}"` : "No net weight/volume with metric unit detected"}
+                </div>
+              </div>
+
+              {/* Field 5: Packaged By / Manufactured By */}
+              <div
+                style={{
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: "8px",
+                  padding: "12px 14px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <label style={{ fontSize: "12px", fontWeight: 700, color: "#102b4e", display: "flex", alignItems: "center", gap: "6px" }}>
+                    <span>🏢</span> 5. Packaged By / Manufactured By (Rule 6(1)(a))
+                  </label>
+                  {targetedOcr?.packagedBy && targetedOcr.confidence.packagedBy >= 75 ? (
+                    <Badge type="green">✓ {targetedOcr.confidence.packagedBy}% High</Badge>
+                  ) : (
+                    <Badge type="amber">⚠️ Please verify</Badge>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  placeholder="e.g. Britannia Industries Ltd, Kolkata - 700017"
+                  value={targetedOcr?.packagedBy ?? manufacturerNameInput ?? ""}
+                  onChange={(e) => updateTargetedField("packagedBy", e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "6px",
+                    background: "#fff",
+                    color: "#0f172a",
+                  }}
+                />
+                <div style={{ fontSize: "11px", color: "#64748b", marginTop: "4px" }}>
+                  <b>Detection:</b> {targetedOcr?.rawMatches.packagedBy ? `Extracted from "${targetedOcr.rawMatches.packagedBy}"` : "No manufacturer/packer name & address found (Marketed By excluded)"}
+                </div>
               </div>
             </div>
+
+            {/* Collapsible Raw OCR Output Toggle */}
+            <div style={{ marginTop: "14px", borderTop: "1px dashed #d1e2e9", paddingTop: "10px" }}>
+              <button
+                type="button"
+                className="plain"
+                onClick={() => setShowRawOcrDebug(!showRawOcrDebug)}
+                style={{
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  color: "#0f8e7d",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  cursor: "pointer",
+                }}
+              >
+                <Icon name="file" size={14} />
+                {showRawOcrDebug ? "Hide Full Preserved OCR Text" : "Show Full Preserved OCR Text (Debug View)"}
+              </button>
+            </div>
+
+            {/* Raw Preserved OCR Text Panel (Collapsible) */}
+            {showRawOcrDebug && (
+              <div style={{ marginTop: "10px" }}>
+                <p style={{ fontSize: "11px", color: "#647589", margin: "0 0 6px" }}>
+                  Full recognized text preserving line breaks and structure. Edits here will re-trigger targeted parser.
+                </p>
+                <textarea
+                  value={rawOcrText}
+                  onChange={(e) => handleOcrTextChange(e.target.value)}
+                  placeholder="Captured label text will appear here with line breaks preserved..."
+                  rows={6}
+                  style={{
+                    width: "100%",
+                    fontFamily: "'DM Mono', monospace",
+                    fontSize: "11px",
+                    lineHeight: "1.5",
+                    padding: "8px",
+                    borderRadius: "6px",
+                    border: "1px solid #cbd8e1",
+                    background: "#f8fafc",
+                    color: "#1e293b",
+                    resize: "vertical",
+                  }}
+                />
+              </div>
+            )}
           </div>
 
           {/* Rule 7 & 9 Font-Height & PDP Parameters Box */}

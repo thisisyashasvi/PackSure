@@ -21,6 +21,8 @@ export function exportToPdf(data: InspectionRecord | ProductData, inspectorNotes
   const badgeNumber = isInspection ? (data as InspectionRecord).inspectorBadge : "LMO-DEL-2026-089"
   const zone = isInspection ? (data as InspectionRecord).zone : "Delhi NCR Enforcement Division"
   
+  const pkgDate = ("packagingDate" in data && data.packagingDate) || ("mfgDate" in data && data.mfgDate) || "Not Declared"
+  const expDate = data.expiryDate || "Not Declared"
   const fontReport = data.fontCompliance
   const violations = data.violations || []
 
@@ -181,7 +183,7 @@ export function exportToPdf(data: InspectionRecord | ProductData, inspectorNotes
     </div>
   </div>
 
-  <div class="section-head">1. Packaged Commodity Specification</div>
+  <div class="section-head">1. Packaged Commodity Specification (Targeted Declarations)</div>
   <table>
     <tr>
       <th style="width: 25%;">Product Name</th>
@@ -200,6 +202,12 @@ export function exportToPdf(data: InspectionRecord | ProductData, inspectorNotes
       <td><b>${mrp}</b></td>
       <th>Declared Net Qty</th>
       <td><b>${netQty}</b></td>
+    </tr>
+    <tr>
+      <th>Packaging Date</th>
+      <td><b>${pkgDate}</b></td>
+      <th>Use By / Expiry Date</th>
+      <td><b>${expDate}</b></td>
     </tr>
     <tr>
       <th>Manufacturer / Packer</th>
@@ -262,6 +270,18 @@ export function exportToPdf(data: InspectionRecord | ProductData, inspectorNotes
         <td>Net Quantity in metric units (g, kg, ml, l)</td>
         <td>${netQty}</td>
         <td><b>${netQty && netQty !== "Not Declared" ? "COMPLIANT" : "NON-COMPLIANT"}</b></td>
+      </tr>
+      <tr>
+        <td><b>Rule 6(1)(d)</b></td>
+        <td>Month &amp; Year of Packaging / Mfg</td>
+        <td>${pkgDate}</td>
+        <td><b>${pkgDate !== "Not Declared" ? "COMPLIANT" : "NON-COMPLIANT"}</b></td>
+      </tr>
+      <tr>
+        <td><b>Rule 6(1)(d)</b></td>
+        <td>Use By / Best Before / Expiry Date</td>
+        <td>${expDate}</td>
+        <td><b>${expDate !== "Not Declared" && !violations.includes("expired") ? "COMPLIANT" : "NON-COMPLIANT"}</b></td>
       </tr>
       <tr>
         <td><b>Rule 6(1)(e) / Rule 18(2)</b></td>
@@ -328,6 +348,9 @@ export function exportToDocx(data: InspectionRecord | ProductData, inspectorNote
   const inspectorName = isInspection ? (data as InspectionRecord).inspectorName : "Inspector Aarav Sharma"
   const fontReport = data.fontCompliance
 
+  const pkgDate = ("packagingDate" in data && data.packagingDate) || ("mfgDate" in data && data.mfgDate) || "Not Declared"
+  const expDate = data.expiryDate || "Not Declared"
+
   const wordHtml = `
 <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
 <head>
@@ -352,11 +375,12 @@ export function exportToDocx(data: InspectionRecord | ProductData, inspectorNote
     <p><b>Inspecting Officer:</b> ${inspectorName} | <b>Overall Verdict:</b> ${status} (${score}/100)</p>
   </div>
 
-  <h3>1. Product &amp; Packaging Declarations</h3>
+  <h3>1. Product &amp; Packaging Declarations (Targeted Extraction)</h3>
   <table>
     <tr><th>Product Name</th><td>${productName}</td><th>Brand</th><td>${brand}</td></tr>
     <tr><th>Barcode</th><td>${barcode}</td><th>Category</th><td>${data.category}</td></tr>
     <tr><th>Printed MRP</th><td>${mrp}</td><th>Net Quantity</th><td>${netQty}</td></tr>
+    <tr><th>Packaging Date</th><td>${pkgDate}</td><th>Use By / Expiry Date</th><td>${expDate}</td></tr>
     <tr><th>Manufacturer &amp; Address</th><td colspan='3'>${mfrName}, ${mfrAddr}</td></tr>
   </table>
 
@@ -406,6 +430,8 @@ export function exportToCsvOrXlsx(
     "Brand",
     "MRP (INR)",
     "Net Quantity",
+    "Packaging Date",
+    "Expiry Date",
     "Compliance Score",
     "Compliance Status",
     "Violations Flagged",
@@ -466,6 +492,9 @@ export function exportToCsvOrXlsx(
       action = `"${cp.status} - ${cp.remarks || "Under Review"}"`
     }
 
+    const rowPkgDate = `"${(("packagingDate" in r && (r as any).packagingDate) || ("mfgDate" in r && (r as any).mfgDate) || "N/A").replace(/"/g, '""')}"`
+    const rowExpDate = `"${(r.expiryDate || "N/A").replace(/"/g, '""')}"`
+
     return [
       id,
       barcode,
@@ -473,6 +502,8 @@ export function exportToCsvOrXlsx(
       brand,
       mrp,
       netQty,
+      rowPkgDate,
+      rowExpDate,
       score,
       status,
       violations,

@@ -125,8 +125,11 @@ export interface ProductData {
   mrpDisplay: string
   netQuantity: string | null
   mfgDate: string
+  packagingDate?: string | null
   expiryDate: string | null
   batchNumber: string | null
+  netWeight?: string | null
+  packagedBy?: string | null
   manufacturerName: string | null
   manufacturerAddress: string | null
   consumerCare: string | null
@@ -145,6 +148,7 @@ export interface ProductData {
   scoreBreakdown?: TruthScoreBreakdown
   fontCompliance?: FontComplianceReport
   evidenceImages?: string[]
+  targetedOcr?: TargetedOcrResult
 }
 
 export interface ScanRecord {
@@ -273,14 +277,43 @@ export interface ExtractedEntities {
   barcode?: string
 }
 
+export interface TargetedOcrResult {
+  packagingDate: string | null
+  expiryDate: string | null
+  mrp: string | null
+  netWeight: string | null
+  packagedBy: string | null
+
+  confidence: {
+    packagingDate: number
+    expiryDate: number
+    mrp: number
+    netWeight: number
+    packagedBy: number
+  }
+
+  rawMatches: {
+    packagingDate: string | null
+    expiryDate: string | null
+    mrp: string | null
+    netWeight: string | null
+    packagedBy: string | null
+  }
+
+  rawOcrText: string
+  overallConfidence: number
+}
+
 export interface OcrScanResult {
   rawText: string
   lines: string[]
   confidence: number
   entities: ExtractedEntities
+  targeted: TargetedOcrResult
   quality: ImageQualityReport
   scannedAt: string
   imageFileName?: string
   imageDataUrl?: string
 }
+
 

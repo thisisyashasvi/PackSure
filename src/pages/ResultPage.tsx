@@ -26,7 +26,7 @@ export const ResultPage: React.FC<ResultPageProps> = ({
     currentUser?.role === "officer" ||
     currentUser?.email?.toLowerCase() === "thisisyashasvi@gmail.com"
 
-  const [activeTab, setActiveTab] = useState<"checklist" | "ocr" | "citations">("checklist")
+  const [activeTab, setActiveTab] = useState<"targeted" | "checklist" | "citations" | "ocr">("targeted")
   const [showPrintModal, setShowPrintModal] = useState<boolean>(false)
   const [showScoreBreakdown, setShowScoreBreakdown] = useState<boolean>(true)
 
@@ -42,6 +42,106 @@ export const ResultPage: React.FC<ResultPageProps> = ({
   // Statutory Citations & Enforcement Recommendation
   const statutoryCitations = generateStatutoryCitations(currentProduct, fontReport)
   const enforcementRecommendation = deriveEnforcementRecommendation(currentProduct, fontReport)
+
+  // 5 Targeted Compliance Fields Audit Data
+  const targetedFields = [
+    {
+      key: "packagingDate",
+      title: "1. Packaging Date",
+      rule: "Rule 6(1)(d)",
+      icon: "📅",
+      value: currentProduct.packagingDate || currentProduct.mfgDate || null,
+      status: currentProduct.packagingDate || currentProduct.mfgDate ? ("pass" as const) : ("warn" as const),
+      statusLabel: currentProduct.packagingDate || currentProduct.mfgDate ? "Pass ✅" : "Unable to Verify ⚠️",
+      reason: currentProduct.packagingDate || currentProduct.mfgDate
+        ? "Packaging / manufacturing date clearly detected and verified under Rule 6(1)(d)."
+        : "Reason: Packaging Date could not be detected near packaging labels (Rule 6(1)(d)).",
+    },
+    {
+      key: "expiryDate",
+      title: "2. Use By / Expiry Date",
+      rule: "Rule 6(1)(d)",
+      icon: "⏳",
+      value: currentProduct.expiryDate || null,
+      status: currentProduct.violations.includes("expired")
+        ? ("fail" as const)
+        : currentProduct.expiryDate
+        ? ("pass" as const)
+        : ("warn" as const),
+      statusLabel: currentProduct.violations.includes("expired")
+        ? "Violation ❌"
+        : currentProduct.expiryDate
+        ? "Pass ✅"
+        : "Unable to Verify ⚠️",
+      reason: currentProduct.violations.includes("expired")
+        ? `Reason: Declared expiry date (${currentProduct.expiryDate}) has passed. Sale of expired commodities violates Section 18 of LMPC Act & FSSAI.`
+        : currentProduct.expiryDate
+        ? "Use By / Best Before duration verified active."
+        : "Reason: Expiry date statement not detected near commodity marking.",
+    },
+    {
+      key: "mrp",
+      title: "3. Maximum Retail Price (MRP)",
+      rule: "Rule 6(1)(e)",
+      icon: "💰",
+      value: currentProduct.mrp !== null ? `₹${currentProduct.mrp.toFixed(2)} (incl. of all taxes)` : null,
+      status: currentProduct.violations.includes("overcharging")
+        ? ("fail" as const)
+        : currentProduct.mrp === null
+        ? ("fail" as const)
+        : ("pass" as const),
+      statusLabel: currentProduct.violations.includes("overcharging") || currentProduct.mrp === null
+        ? "Violation ❌"
+        : "Pass ✅",
+      reason: currentProduct.violations.includes("overcharging")
+        ? `Reason: Charged price (₹${currentProduct.sellingPrice?.toFixed(2)}) exceeds declared printed MRP (₹${currentProduct.mrp?.toFixed(2)}) under Rule 18(2).`
+        : currentProduct.mrp === null
+        ? "Reason: MRP could not be detected near an MRP/price label (Rule 6(1)(e))."
+        : "Statutory MRP inclusive of all taxes clearly printed and compliant.",
+    },
+    {
+      key: "netWeight",
+      title: "4. Net Weight / Net Quantity",
+      rule: "Rule 6(1)(c)",
+      icon: "⚖️",
+      value: currentProduct.netWeight || currentProduct.netQuantity || null,
+      status: (!currentProduct.netQuantity && !currentProduct.netWeight)
+        ? ("fail" as const)
+        : fontReport.nonStandardUnitsDetected.length > 0
+        ? ("fail" as const)
+        : !fontReport.fontHeightCompliant
+        ? ("warn" as const)
+        : ("pass" as const),
+      statusLabel: (!currentProduct.netQuantity && !currentProduct.netWeight) || fontReport.nonStandardUnitsDetected.length > 0
+        ? "Violation ❌"
+        : !fontReport.fontHeightCompliant
+        ? "Unable to Verify ⚠️"
+        : "Pass ✅",
+      reason: (!currentProduct.netQuantity && !currentProduct.netWeight)
+        ? "Reason: Net quantity (weight/volume) could not be detected near net weight labels (Rule 6(1)(c))."
+        : fontReport.nonStandardUnitsDetected.length > 0
+        ? `Reason: Non-standard metric units used (${fontReport.nonStandardUnitsDetected.join(", ")}) violating Rule 11.`
+        : !fontReport.fontHeightCompliant
+        ? `Reason: Detected numeral height (${fontReport.detectedFontHeightMm}mm) is below minimum (${fontReport.prescribedMinHeightMm}mm) under Table 1.`
+        : "Standard metric net weight / volume declaration verified.",
+    },
+    {
+      key: "packagedBy",
+      title: "5. Packaged By / Manufactured By",
+      rule: "Rule 6(1)(a)",
+      icon: "🏢",
+      value: currentProduct.packagedBy || currentProduct.manufacturerName || null,
+      status: currentProduct.violations.includes("manufacturer_missing") || (!currentProduct.packagedBy && !currentProduct.manufacturerName)
+        ? ("fail" as const)
+        : ("pass" as const),
+      statusLabel: currentProduct.violations.includes("manufacturer_missing") || (!currentProduct.packagedBy && !currentProduct.manufacturerName)
+        ? "Violation ❌"
+        : "Pass ✅",
+      reason: currentProduct.violations.includes("manufacturer_missing") || (!currentProduct.packagedBy && !currentProduct.manufacturerName)
+        ? "Reason: Name and address of manufacturer or packer is missing under Rule 6(1)(a). (Marketed By alone is unverified)."
+        : "Complete manufacturer / packer identification and address verified.",
+    },
+  ]
 
   // Determine primary issue type for reporting
   const getPrimaryIssueType = (): string => {
@@ -644,6 +744,19 @@ export const ResultPage: React.FC<ResultPageProps> = ({
               <div style={{ display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
                 <button
                   className="plain"
+                  onClick={() => setActiveTab("targeted")}
+                  style={{
+                    fontSize: "14px",
+                    fontWeight: 700,
+                    color: activeTab === "targeted" ? "#102b4e" : "#8395a7",
+                    borderBottom: activeTab === "targeted" ? "2px solid #0f8e7d" : "none",
+                    paddingBottom: "4px",
+                  }}
+                >
+                  🎯 Detected Package Information (5 Fields)
+                </button>
+                <button
+                  className="plain"
                   onClick={() => setActiveTab("checklist")}
                   style={{
                     fontSize: "14px",
@@ -653,7 +766,7 @@ export const ResultPage: React.FC<ResultPageProps> = ({
                     paddingBottom: "4px",
                   }}
                 >
-                  Package Declarations (Rule 6)
+                  Statutory Rule 6 Checklist
                 </button>
                 <button
                   className="plain"
@@ -690,6 +803,89 @@ export const ResultPage: React.FC<ResultPageProps> = ({
             </Badge>
           </div>
 
+          {/* 1. Targeted 5-Field Audit View */}
+          {activeTab === "targeted" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginTop: "14px" }}>
+              <div
+                style={{
+                  background: "#f0f8f6",
+                  border: "1px solid #cce8e2",
+                  borderRadius: "8px",
+                  padding: "10px 14px",
+                  fontSize: "12px",
+                  color: "#08705a",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <Icon name="shield" size={16} style={{ color: "#0f8e7d" }} />
+                  <span>
+                    <b>Targeted Compliance Audit:</b> Status and statutory findings for the 5 mandatory package fields.
+                  </span>
+                </div>
+                <Badge type="green">LMPC Rule 6 Verification</Badge>
+              </div>
+
+              {targetedFields.map((field) => (
+                <div
+                  key={field.key}
+                  style={{
+                    background: field.status === "fail" ? "#fdf1f1" : field.status === "warn" ? "#fdf8ee" : "#fff",
+                    border:
+                      field.status === "fail"
+                        ? "1px solid #f7c3c6"
+                        : field.status === "warn"
+                        ? "1px solid #fde0a8"
+                        : "1px solid #dbe5ee",
+                    borderLeft:
+                      field.status === "fail"
+                        ? "4px solid #c9484d"
+                        : field.status === "warn"
+                        ? "4px solid #ea580c"
+                        : "4px solid #0f8e7d",
+                    borderRadius: "8px",
+                    padding: "12px 16px",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span style={{ fontSize: "16px" }}>{field.icon}</span>
+                      <b style={{ fontSize: "13px", color: "#102b4e" }}>{field.title}</b>
+                      <span style={{ fontSize: "11px", color: "#64748b" }}>({field.rule})</span>
+                    </div>
+                    <Badge
+                      type={field.status === "pass" ? "green" : field.status === "warn" ? "amber" : "red"}
+                      style={{ fontWeight: 700 }}
+                    >
+                      {field.statusLabel}
+                    </Badge>
+                  </div>
+
+                  <div style={{ margin: "4px 0 6px", fontSize: "13px" }}>
+                    <span style={{ color: "#64748b", fontSize: "12px" }}>Extracted / Declared Value: </span>
+                    <b style={{ color: field.value ? "#0f172a" : "#991b1b" }}>
+                      {field.value || "Not Detected / Missing"}
+                    </b>
+                  </div>
+
+                  <div
+                    style={{
+                      fontSize: "12px",
+                      color: field.status === "fail" ? "#991b1b" : field.status === "warn" ? "#9a3412" : "#08705a",
+                      fontWeight: field.status !== "pass" ? 600 : 400,
+                    }}
+                  >
+                    {field.reason}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 2. Full Rule 6 Declarations Checklist */}
           {activeTab === "checklist" && (
             <div className="check-list">
               <div className="check-item">
