@@ -102,7 +102,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
             Sign In to Scan Products
           </h1>
           <p style={{ color: "#647589", fontSize: "14px", lineHeight: "1.6", marginTop: "10px", maxWidth: "460px", margin: "10px auto 24px" }}>
-            To perform dual-camera barcode and OCR label inspections and generate Legal Metrology compliance dossiers, please sign in with your account.
+            To perform barcode scanning, Tesseract.js OCR label checks, and save audit records to the SQL database, please sign in with your account.
           </p>
 
           <div style={{ display: "flex", gap: "12px", justifyContent: "center", flexWrap: "wrap" }}>
@@ -124,8 +124,11 @@ export const ScanPage: React.FC<ScanPageProps> = ({
 
   const isOfficer = currentUser?.role === "officer" || currentUser?.role === "admin" || currentUser?.email?.toLowerCase() === "thisisyashasvi@gmail.com"
 
-  // Active view tab: "dual" (both cameras) | "barcode" (Camera 1) | "label" (Camera 2)
-  const [activeTab, setActiveTab] = useState<"dual" | "barcode" | "label">("dual")
+  // Primary top tab: "photo" (Label OCR Scanner) | "barcode" (Barcode Scanner) | "dual" (Dual Cameras)
+  const [activeTab, setActiveTab] = useState<"photo" | "barcode" | "dual">("photo")
+
+  // Sub-mode for Label OCR tab: "upload" (file upload view) | "camera" (live camera view)
+  const [labelPhotoMode, setLabelPhotoMode] = useState<"upload" | "camera">("upload")
 
   // Form Fields State
   const [barcodeInput, setBarcodeInput] = useState<string>("")
@@ -155,7 +158,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false)
 
   // =========================================================================
-  // CAMERA 1: BARCODE SCANNER STATE
+  // CAMERA 1: BARCODE SCANNER (AUTO-FILLS BARCODE NUMBER FIELD)
   // =========================================================================
   const barcodeVideoRef = useRef<HTMLVideoElement | null>(null)
   const barcodeScannerRef = useRef<BarcodeScannerController | null>(null)
@@ -165,7 +168,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
   const [scannedBarcode, setScannedBarcode] = useState<string | null>(null)
   const [scannedBarcodeFormat, setScannedBarcodeFormat] = useState<string>("")
 
-  // Available camera devices on device
+  // Available camera devices
   const [videoDevices, setVideoDevices] = useState<VideoDeviceOption[]>([])
   const [selectedBarcodeDeviceId, setSelectedBarcodeDeviceId] = useState<string>("")
   const [selectedLabelDeviceId, setSelectedLabelDeviceId] = useState<string>("")
@@ -175,18 +178,14 @@ export const ScanPage: React.FC<ScanPageProps> = ({
       setVideoDevices(devs)
       if (devs.length > 0) {
         setSelectedBarcodeDeviceId(devs[0].deviceId)
-        if (devs.length > 1) {
-          setSelectedLabelDeviceId(devs[1].deviceId)
-        } else {
-          setSelectedLabelDeviceId(devs[0].deviceId)
-        }
+        setSelectedLabelDeviceId(devs.length > 1 ? devs[1].deviceId : devs[0].deviceId)
       }
     })
   }, [])
 
-  // Start Camera 1 (Barcode)
+  // Start Barcode Scanner
   const startBarcodeScannerInstance = () => {
-    if (barcodeVideoRef.current && (activeTab === "dual" || activeTab === "barcode")) {
+    if (barcodeVideoRef.current && (activeTab === "barcode" || activeTab === "dual")) {
       setBarcodeCamError(null)
       setIsBarcodeCamActive(true)
 
@@ -198,9 +197,11 @@ export const ScanPage: React.FC<ScanPageProps> = ({
       const controller = startLiveBarcodeScanner(
         barcodeVideoRef.current,
         (result: BarcodeDetectionResult) => {
-          setScannedBarcode(result.rawValue)
+          // When barcode detected -> directly fill barcode box!
+          const code = result.rawValue.trim()
+          setScannedBarcode(code)
           setScannedBarcodeFormat(result.format)
-          setBarcodeInput(result.rawValue)
+          setBarcodeInput(code)
         },
         (errMsg: string) => {
           setBarcodeCamError(errMsg)
@@ -213,7 +214,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
     }
   }
 
-  // Stop Camera 1
+  // Stop Barcode Scanner
   const stopBarcodeScannerInstance = () => {
     if (barcodeScannerRef.current) {
       barcodeScannerRef.current.stop()
@@ -227,16 +228,9 @@ export const ScanPage: React.FC<ScanPageProps> = ({
     setIsBarcodeCamActive(false)
   }
 
-  // Reset / Scan Barcode Again
-  const handleBarcodeScanAgain = () => {
-    setScannedBarcode(null)
-    setScannedBarcodeFormat("")
-    startBarcodeScannerInstance()
-  }
-
   // Barcode Scanner Lifecycle
   useEffect(() => {
-    if (activeTab === "dual" || activeTab === "barcode") {
+    if (activeTab === "barcode" || activeTab === "dual") {
       startBarcodeScannerInstance()
     } else {
       stopBarcodeScannerInstance()
@@ -248,11 +242,11 @@ export const ScanPage: React.FC<ScanPageProps> = ({
   }, [activeTab, barcodeFacing, selectedBarcodeDeviceId])
 
   // =========================================================================
-  // CAMERA 2: LABEL & EXPIRY DETAILS OCR SCANNER STATE
+  // CAMERA 2: LABEL OCR SCANNER (EXTRACTS EXPIRY, PACKAGING, MRP, QTY, MAKER)
   // =========================================================================
   const labelVideoRef = useRef<HTMLVideoElement | null>(null)
   const labelStreamRef = useRef<MediaStream | null>(null)
-  const [isLabelCamActive, setIsLabelCamActive] = useState<boolean>(true)
+  const [isLabelCamActive, setIsLabelCamActive] = useState<boolean>(false)
   const [labelCamError, setLabelCamError] = useState<string | null>(null)
   const [labelFacing, setLabelFacing] = useState<"environment" | "user">("environment")
 
@@ -268,40 +262,38 @@ export const ScanPage: React.FC<ScanPageProps> = ({
   const [targetedOcr, setTargetedOcr] = useState<TargetedOcrResult | null>(null)
   const [showRawOcrDebug, setShowRawOcrDebug] = useState<boolean>(false)
 
-  // Start Camera 2 (Label Video Stream)
+  // Start Label Camera Stream
   const startLabelCameraInstance = async () => {
-    if (activeTab === "dual" || activeTab === "label") {
-      setLabelCamError(null)
-      setIsLabelCamActive(true)
+    setLabelCamError(null)
+    setIsLabelCamActive(true)
 
-      try {
-        if (labelStreamRef.current) {
-          labelStreamRef.current.getTracks().forEach((t) => t.stop())
-          labelStreamRef.current = null
-        }
-
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-          const constraints: MediaStreamConstraints = {
-            video: selectedLabelDeviceId
-              ? { deviceId: { exact: selectedLabelDeviceId } }
-              : { facingMode: labelFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
-            audio: false,
-          }
-          const stream = await navigator.mediaDevices.getUserMedia(constraints)
-          labelStreamRef.current = stream
-          if (labelVideoRef.current) {
-            labelVideoRef.current.srcObject = stream
-            await labelVideoRef.current.play()
-          }
-        }
-      } catch (err: any) {
-        console.warn("Label camera stream notice:", err)
-        setLabelCamError(err.name === "NotAllowedError" ? "Camera permission denied." : "Label camera stream standby.")
+    try {
+      if (labelStreamRef.current) {
+        labelStreamRef.current.getTracks().forEach((t) => t.stop())
+        labelStreamRef.current = null
       }
+
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const constraints: MediaStreamConstraints = {
+          video: selectedLabelDeviceId
+            ? { deviceId: { exact: selectedLabelDeviceId } }
+            : { facingMode: labelFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        }
+        const stream = await navigator.mediaDevices.getUserMedia(constraints)
+        labelStreamRef.current = stream
+        if (labelVideoRef.current) {
+          labelVideoRef.current.srcObject = stream
+          await labelVideoRef.current.play()
+        }
+      }
+    } catch (err: any) {
+      console.warn("Label camera stream notice:", err)
+      setLabelCamError(err.name === "NotAllowedError" ? "Camera permission denied. Please allow camera access." : "Label camera stream standby.")
     }
   }
 
-  // Stop Camera 2
+  // Stop Label Camera Stream
   const stopLabelCameraInstance = () => {
     if (labelStreamRef.current) {
       labelStreamRef.current.getTracks().forEach((t) => t.stop())
@@ -315,7 +307,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
 
   // Label Camera Lifecycle
   useEffect(() => {
-    if (activeTab === "dual" || activeTab === "label") {
+    if (activeTab === "dual" || (activeTab === "photo" && labelPhotoMode === "camera")) {
       startLabelCameraInstance()
     } else {
       stopLabelCameraInstance()
@@ -324,7 +316,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
     return () => {
       stopLabelCameraInstance()
     }
-  }, [activeTab, labelFacing, selectedLabelDeviceId])
+  }, [activeTab, labelPhotoMode, labelFacing, selectedLabelDeviceId])
 
   // Synchronize Form Fields whenever Extracted Entities or Targeted OCR update
   const syncEntitiesToForm = (entities: ExtractedEntities, targeted?: TargetedOcrResult) => {
@@ -398,7 +390,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
     setSelectedImageSrc(imageSrc)
     setImageFileName(fileName)
     setIsOcrProcessing(true)
-    setOcrProgress({ status: "Evaluating image quality & blur...", progress: 0.1 })
+    setOcrProgress({ status: "Evaluating image quality & sharpness...", progress: 0.1 })
 
     const img = new Image()
     img.crossOrigin = "anonymous"
@@ -427,10 +419,10 @@ export const ScanPage: React.FC<ScanPageProps> = ({
     }
   }
 
-  // Snap Label from Camera 2 Stream
+  // Snap Label from Camera Stream
   const handleSnapLabelFromCamera = () => {
     let snapDataUrl = ""
-    const snapName = `label_camera_snap_${Date.now().toString().slice(-4)}.jpg`
+    const snapName = `label_snap_${Date.now().toString().slice(-4)}.jpg`
 
     if (labelVideoRef.current && labelVideoRef.current.videoWidth > 0) {
       const canvas = document.createElement("canvas")
@@ -761,7 +753,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
         status: inspectedProduct.complianceStatus === "Likely Compliant" ? "Verified Compliant" : "Notice Issued",
         merchantName: merchantNameInput || "Retail Merchant / Supermarket",
         merchantAddress: merchantAddressInput || "Delhi NCR Inspection District",
-        inspectorNotes: inspectorNotesInput || "Automated Legal Metrology dual-camera barcode & OCR label inspection.",
+        inspectorNotes: inspectorNotesInput || "Automated Legal Metrology barcode & OCR label inspection.",
       }
       sqlDb.saveInspection(newInspectionRecord)
 
@@ -780,15 +772,15 @@ export const ScanPage: React.FC<ScanPageProps> = ({
       <div className="crumb">
         <button className="plain" onClick={() => setPage("home")}>Home</button>
         <Icon name="chevron" size={14} />
-        <span>Dual-Camera Inspection Suite</span>
+        <span>Inspection Scan</span>
       </div>
 
       {/* Heading */}
       <div className="scan-heading">
         <div>
-          <div className="section-label">LEGAL METROLOGY DUAL-CAMERA COMPLIANCE SUITE</div>
-          <h1>Dual-Camera Barcode &amp; OCR Statutory Inspection</h1>
-          <p>Camera 1 reads the product barcode instantly. Camera 2 scans and extracts Expiry, Packaging Date, MRP, Net Weight, and Maker details via OCR.</p>
+          <div className="section-label">LEGAL METROLOGY COMPLIANCE SUITE</div>
+          <h1>Barcode &amp; OCR Label Statutory Inspection Suite</h1>
+          <p>Scan the commodity barcode directly to populate the barcode number, or use the camera to OCR-extract Expiry, PKD, MRP, and Maker details.</p>
         </div>
         <div className="secure-note">
           <Icon name="shield" />
@@ -803,52 +795,388 @@ export const ScanPage: React.FC<ScanPageProps> = ({
       {/* Mode View Tabs */}
       <div className="scan-tabs" style={{ marginTop: "16px" }}>
         <button
-          className={activeTab === "dual" ? "active" : ""}
-          onClick={() => setActiveTab("dual")}
+          className={activeTab === "photo" ? "active" : ""}
+          onClick={() => setActiveTab("photo")}
         >
-          ⚡ Dual-Camera View (Barcode + Label OCR)
+          <Icon name="file" /> 📸 Scan Label Photo (OCR &amp; Expiry)
         </button>
         <button
           className={activeTab === "barcode" ? "active" : ""}
           onClick={() => setActiveTab("barcode")}
         >
-          📷 Camera 1: Barcode Scanner
+          <Icon name="scan" /> 📷 Scan Barcode
         </button>
         <button
-          className={activeTab === "label" ? "active" : ""}
-          onClick={() => setActiveTab("label")}
+          className={activeTab === "dual" ? "active" : ""}
+          onClick={() => setActiveTab("dual")}
         >
-          📸 Camera 2: Label &amp; Expiry OCR
+          ⚡ Dual-Camera View (Barcode + Label OCR)
         </button>
       </div>
 
       {/* Main Scan Layout */}
       <div className="scan-layout" style={{ marginTop: "20px" }}>
-        {/* Left Section: Cameras & Extracted Info */}
-        <section className="scan-panel" style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+        {/* Left Section */}
+        <section className="scan-panel" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
 
           {/* =========================================================================
-              CAMERA 1: LIVE BARCODE SCANNER
+              TAB: SCAN LABEL PHOTO / OCR & EXPIRY SCANNER
              ========================================================================= */}
-          {(activeTab === "dual" || activeTab === "barcode") && (
+          {(activeTab === "photo" || activeTab === "dual") && (
             <div
               style={{
                 background: "#fff",
-                border: "2px solid #0f8e7d",
+                border: activeTab === "dual" ? "2px solid #3b82f6" : "1px solid #d9e3e9",
                 borderRadius: "14px",
-                padding: "16px 20px",
-                boxShadow: "0 4px 18px rgba(15, 142, 125, 0.08)",
+                padding: "20px",
+                boxShadow: "0 4px 16px rgba(16, 43, 78, 0.06)",
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "10px" }}>
+              {/* Header */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "14px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span style={{ fontSize: "20px" }}>📸</span>
+                  <div>
+                    <h3 style={{ fontSize: "16px", color: "#102b4e", margin: 0, fontWeight: 700 }}>
+                      Package Label &amp; Declarations OCR Scanner
+                    </h3>
+                    <p style={{ fontSize: "12px", color: "#64748b", margin: "2px 0 0" }}>
+                      Extracts Packaging Date, Expiry Date, MRP, Net Quantity, and Packaged By
+                    </p>
+                  </div>
+                </div>
+
+                {/* Sub-mode switch (Upload vs Camera) */}
+                {activeTab === "photo" && !selectedImageSrc && (
+                  <div style={{ display: "flex", gap: "4px", background: "#f1f5f9", padding: "3px", borderRadius: "8px" }}>
+                    <button
+                      type="button"
+                      onClick={() => setLabelPhotoMode("upload")}
+                      style={{
+                        background: labelPhotoMode === "upload" ? "#fff" : "transparent",
+                        color: labelPhotoMode === "upload" ? "#0f8e7d" : "#64748b",
+                        border: "none",
+                        borderRadius: "6px",
+                        padding: "5px 12px",
+                        fontSize: "12px",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        boxShadow: labelPhotoMode === "upload" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                      }}
+                    >
+                      📁 Upload File
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLabelPhotoMode("camera")}
+                      style={{
+                        background: labelPhotoMode === "camera" ? "#fff" : "transparent",
+                        color: labelPhotoMode === "camera" ? "#0f8e7d" : "#64748b",
+                        border: "none",
+                        borderRadius: "6px",
+                        padding: "5px 12px",
+                        fontSize: "12px",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        boxShadow: labelPhotoMode === "camera" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                      }}
+                    >
+                      📷 Use Camera
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* 1. Live Camera Mode for Label OCR */}
+              {(labelPhotoMode === "camera" || activeTab === "dual") && !selectedImageSrc && (
+                <div>
+                  <div
+                    style={{
+                      height: "300px",
+                      borderRadius: "12px",
+                      background: "#08131f",
+                      position: "relative",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      overflow: "hidden",
+                      border: "2px solid #234365",
+                    }}
+                  >
+                    <video
+                      ref={labelVideoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      style={{
+                        position: "absolute",
+                        inset: 0,
+                        width: "100%",
+                        height: "100%",
+                        objectFit: "cover",
+                        display: isLabelCamActive ? "block" : "none",
+                      }}
+                    />
+
+                    {/* Framing Reticle */}
+                    <div
+                      style={{
+                        position: "relative",
+                        width: "85%",
+                        maxWidth: "360px",
+                        height: "180px",
+                        border: "2px dashed #60a5fa",
+                        borderRadius: "12px",
+                        zIndex: 2,
+                        display: "flex",
+                        flexDirection: "column",
+                        justifyContent: "space-between",
+                        padding: "10px",
+                        boxShadow: "0 0 0 4000px rgba(8, 19, 31, 0.35)",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: "10px", color: "#93c5fd", background: "rgba(0,0,0,0.6)", padding: "2px 6px", borderRadius: "3px", fontWeight: 700 }}>
+                          LABEL DECLARATIONS TARGET
+                        </span>
+                        <span style={{ fontSize: "10px", color: "#cbd5e1", background: "rgba(0,0,0,0.6)", padding: "2px 6px", borderRadius: "3px" }}>
+                          OCR Engine Active
+                        </span>
+                      </div>
+
+                      <div style={{ textAlign: "center", color: "#dbeafe", fontSize: "11px", background: "rgba(0,0,0,0.7)", padding: "4px 10px", borderRadius: "4px", alignSelf: "center" }}>
+                        Position Expiry, Packaging Date, MRP &amp; Net Weight in frame
+                      </div>
+                    </div>
+
+                    {/* Camera Control Overlays */}
+                    <div style={{ position: "absolute", bottom: "14px", zIndex: 3, display: "flex", gap: "10px", alignItems: "center" }}>
+                      <button
+                        type="button"
+                        onClick={handleSnapLabelFromCamera}
+                        style={{
+                          background: "#0f8e7d",
+                          color: "#fff",
+                          border: "none",
+                          borderRadius: "8px",
+                          padding: "10px 20px",
+                          fontWeight: 700,
+                          fontSize: "13px",
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "8px",
+                          boxShadow: "0 4px 14px rgba(15, 142, 125, 0.4)",
+                        }}
+                      >
+                        <Icon name="camera" size={16} /> 📸 Capture Label &amp; Extract Info (OCR)
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setLabelFacing(labelFacing === "environment" ? "user" : "environment")}
+                        style={{
+                          background: "rgba(255, 255, 255, 0.2)",
+                          color: "#fff",
+                          border: "1px solid rgba(255, 255, 255, 0.4)",
+                          borderRadius: "8px",
+                          padding: "10px 14px",
+                          fontSize: "12px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        🔄 Flip
+                      </button>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: "10px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: "12px", color: "#64748b" }}>
+                      Aim camera at the product packaging declarations and click <b>Capture Label</b>.
+                    </span>
+                    {activeTab === "photo" && (
+                      <button
+                        type="button"
+                        className="plain"
+                        onClick={() => setLabelPhotoMode("upload")}
+                        style={{ fontSize: "12px", color: "#0f8e7d", fontWeight: 700, cursor: "pointer" }}
+                      >
+                        📁 Switch to File Upload
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 2. File Upload Mode for Label OCR */}
+              {labelPhotoMode === "upload" && activeTab !== "dual" && !selectedImageSrc && (
+                <div style={{ textAlign: "center", padding: "16px 0" }}>
+                  <div className="camera-circle" style={{ margin: "0 auto 12px" }}>
+                    <Icon name="camera" size={32} />
+                  </div>
+                  <h3 style={{ fontSize: "16px", color: "#102b4e", margin: "0 0 6px" }}>
+                    Attach High-Resolution Product Label Photo
+                  </h3>
+                  <p style={{ fontSize: "13px", color: "#647589", maxWidth: "440px", margin: "0 auto 18px" }}>
+                    Select a photograph of the Principal Display Panel (PDP), ingredient list, or expiry stamp.
+                  </p>
+
+                  <div style={{ display: "flex", gap: "10px", justifyContent: "center", flexWrap: "wrap" }}>
+                    <label
+                      style={{
+                        background: "#0f8e7d",
+                        color: "#fff",
+                        padding: "10px 20px",
+                        borderRadius: "8px",
+                        fontWeight: 700,
+                        fontSize: "13px",
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        boxShadow: "0 2px 8px rgba(15, 142, 125, 0.25)",
+                      }}
+                    >
+                      <Icon name="upload" size={16} /> Choose Image File (JPG, PNG, WEBP)
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleLabelFileUpload}
+                        style={{ display: "none" }}
+                      />
+                    </label>
+
+                    <Button secondary onClick={() => setLabelPhotoMode("camera")}>
+                      <Icon name="camera" size={15} /> 📷 Use Camera
+                    </Button>
+                  </div>
+
+                  {/* Sample Presets */}
+                  <div style={{ marginTop: "20px", borderTop: "1px dashed #d8e3ea", paddingTop: "14px" }}>
+                    <span style={{ fontSize: "11px", color: "#748698", fontWeight: 700, textTransform: "uppercase" }}>
+                      Or test with sample product label presets:
+                    </span>
+                    <div style={{ display: "flex", gap: "6px", justifyContent: "center", flexWrap: "wrap", marginTop: "8px" }}>
+                      {SAMPLE_PRESETS.map((preset, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => handleSelectPreset(preset)}
+                          style={{
+                            background: "#f0f6f8",
+                            border: "1px solid #c9dce3",
+                            padding: "6px 12px",
+                            borderRadius: "6px",
+                            fontSize: "11px",
+                            color: "#183b56",
+                            fontWeight: 600,
+                            cursor: "pointer",
+                          }}
+                        >
+                          🧪 {preset.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 3. Captured / Uploaded Image Preview with OCR State */}
+              {selectedImageSrc && (
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <Badge type="green">LABEL PHOTO CAPTURED</Badge>
+                      <span style={{ fontSize: "12px", color: "#64748b", fontWeight: 600 }}>{imageFileName}</span>
+                    </div>
+                    <Button
+                      secondary
+                      onClick={() => {
+                        setSelectedImageSrc(null)
+                        if (labelPhotoMode === "camera") {
+                          startLabelCameraInstance()
+                        }
+                      }}
+                      style={{ fontSize: "11px", padding: "5px 10px" }}
+                    >
+                      <Icon name="refresh" size={12} /> Rescan / Retake
+                    </Button>
+                  </div>
+
+                  <div
+                    style={{
+                      maxHeight: "220px",
+                      overflow: "hidden",
+                      borderRadius: "10px",
+                      border: "1px solid #cbd5e1",
+                      background: "#0d1b2a",
+                      display: "flex",
+                      justifyContent: "center",
+                      alignItems: "center",
+                      position: "relative",
+                    }}
+                  >
+                    <img
+                      src={selectedImageSrc}
+                      alt="Scanned Package Label"
+                      style={{ maxHeight: "220px", maxWidth: "100%", objectFit: "contain" }}
+                    />
+
+                    {isOcrProcessing && (
+                      <div
+                        style={{
+                          position: "absolute",
+                          inset: 0,
+                          background: "rgba(16, 43, 78, 0.8)",
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          color: "#fff",
+                          padding: "16px",
+                          backdropFilter: "blur(2px)",
+                        }}
+                      >
+                        <div className="laser-line" style={{ width: "80%", height: "2px", background: "#55d2ba", boxShadow: "0 0 10px #55d2ba", marginBottom: "14px" }} />
+                        <Icon name="refresh" size={26} className="animate-spin" style={{ color: "#7ce5cf" }} />
+                        <b style={{ marginTop: "8px", fontSize: "13px" }}>{ocrProgress.status || "Extracting characters..."}</b>
+                        <div style={{ width: "55%", background: "rgba(255,255,255,0.2)", height: "6px", borderRadius: "3px", marginTop: "8px", overflow: "hidden" }}>
+                          <div style={{ width: `${Math.round(ocrProgress.progress * 100)}%`, background: "#55d2ba", height: "100%", transition: "width 0.3s ease" }} />
+                        </div>
+                        <span style={{ fontSize: "11px", color: "#b9dfd8", marginTop: "4px" }}>
+                          Tesseract.js OCR: {Math.round(ocrProgress.progress * 100)}%
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* =========================================================================
+              TAB: LIVE BARCODE SCANNER
+             ========================================================================= */}
+          {(activeTab === "barcode" || activeTab === "dual") && (
+            <div
+              style={{
+                background: "#fff",
+                border: activeTab === "dual" ? "2px solid #0f8e7d" : "1px solid #d9e3e9",
+                borderRadius: "14px",
+                padding: "20px",
+                boxShadow: "0 4px 16px rgba(16, 43, 78, 0.06)",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "12px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                   <span style={{ fontSize: "20px" }}>📷</span>
                   <div>
-                    <h3 style={{ fontSize: "15px", color: "#102b4e", margin: 0, fontWeight: 700 }}>
-                      Camera 1: Barcode Scanner
+                    <h3 style={{ fontSize: "16px", color: "#102b4e", margin: 0, fontWeight: 700 }}>
+                      Live Barcode Scanner
                     </h3>
-                    <p style={{ fontSize: "12px", color: "#64748b", margin: 0 }}>
-                      Point at package barcode to automatically decode the number
+                    <p style={{ fontSize: "12px", color: "#64748b", margin: "2px 0 0" }}>
+                      Point camera at any barcode — automatically reads the number and fills the barcode field
                     </p>
                   </div>
                 </div>
@@ -861,14 +1189,14 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                       background: "#f1f5f9",
                       border: "1px solid #cbd5e1",
                       borderRadius: "6px",
-                      padding: "4px 8px",
+                      padding: "5px 10px",
                       fontSize: "11px",
                       fontWeight: 600,
                       color: "#334155",
                       cursor: "pointer",
                     }}
                   >
-                    🔄 Flip
+                    🔄 Flip Camera
                   </button>
                   {isBarcodeCamActive ? (
                     <button
@@ -879,13 +1207,13 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                         border: "1px solid #fecaca",
                         color: "#b91c1c",
                         borderRadius: "6px",
-                        padding: "4px 8px",
+                        padding: "5px 10px",
                         fontSize: "11px",
                         fontWeight: 600,
                         cursor: "pointer",
                       }}
                     >
-                      ⏹️ Stop
+                      ⏹️ Stop Camera
                     </button>
                   ) : (
                     <button
@@ -896,23 +1224,23 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                         border: "none",
                         color: "#fff",
                         borderRadius: "6px",
-                        padding: "4px 10px",
+                        padding: "5px 12px",
                         fontSize: "11px",
                         fontWeight: 700,
                         cursor: "pointer",
                       }}
                     >
-                      ▶️ Start
+                      ▶️ Start Camera
                     </button>
                   )}
                 </div>
               </div>
 
-              {/* Viewfinder Frame */}
+              {/* Viewfinder */}
               <div
                 style={{
-                  height: "240px",
-                  borderRadius: "10px",
+                  height: "260px",
+                  borderRadius: "12px",
                   background: "#08131f",
                   position: "relative",
                   display: "flex",
@@ -920,7 +1248,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                   alignItems: "center",
                   justifyContent: "center",
                   overflow: "hidden",
-                  border: "1px solid #1e3a5f",
+                  border: "2px solid #1e3a5f",
                 }}
               >
                 <video
@@ -943,8 +1271,8 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                   style={{
                     position: "relative",
                     width: "70%",
-                    maxWidth: "280px",
-                    height: "120px",
+                    maxWidth: "300px",
+                    height: "130px",
                     border: "2px solid rgba(85, 210, 186, 0.6)",
                     borderRadius: "8px",
                     zIndex: 2,
@@ -960,7 +1288,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                   <div style={{ position: "absolute", bottom: "-2px", left: "-2px", width: "16px", height: "16px", borderBottom: "3px solid #55d2ba", borderLeft: "3px solid #55d2ba" }} />
                   <div style={{ position: "absolute", bottom: "-2px", right: "-2px", width: "16px", height: "16px", borderBottom: "3px solid #55d2ba", borderRight: "3px solid #55d2ba" }} />
 
-                  {isBarcodeCamActive && !scannedBarcode && (
+                  {isBarcodeCamActive && (
                     <div
                       style={{
                         position: "absolute",
@@ -976,30 +1304,30 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                   )}
 
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontSize: "9px", color: "#7ce5cf", background: "rgba(0,0,0,0.6)", padding: "1px 4px", borderRadius: "3px" }}>
-                      EAN-13 / UPC
+                    <span style={{ fontSize: "9px", color: "#7ce5cf", background: "rgba(0,0,0,0.6)", padding: "2px 5px", borderRadius: "3px", fontWeight: 700 }}>
+                      EAN-13 / UPC / Code 128
                     </span>
-                    <span style={{ fontSize: "9px", color: "#cbd5e1", background: "rgba(0,0,0,0.6)", padding: "1px 4px", borderRadius: "3px" }}>
-                      GS1
+                    <span style={{ fontSize: "9px", color: "#e2e8f0", background: "rgba(0,0,0,0.6)", padding: "2px 5px", borderRadius: "3px" }}>
+                      GS1 India
                     </span>
                   </div>
 
-                  <div style={{ textAlign: "center", color: "#cbd5e1", fontSize: "10px", background: "rgba(0,0,0,0.7)", padding: "2px 6px", borderRadius: "3px", alignSelf: "center" }}>
-                    {scannedBarcode ? "Barcode Decoded" : "Align barcode in frame"}
+                  <div style={{ textAlign: "center", color: "#cbd5e1", fontSize: "11px", background: "rgba(0,0,0,0.7)", padding: "3px 8px", borderRadius: "3px", alignSelf: "center" }}>
+                    {scannedBarcode ? `✅ Barcode Scanned: ${scannedBarcode}` : "Align commodity barcode inside frame"}
                   </div>
                 </div>
 
-                {/* Status bar */}
+                {/* Status indicator */}
                 <div
                   style={{
                     position: "absolute",
-                    bottom: "10px",
+                    bottom: "12px",
                     zIndex: 3,
                     background: "rgba(15, 23, 42, 0.85)",
                     border: "1px solid rgba(85, 210, 186, 0.3)",
                     borderRadius: "16px",
-                    padding: "4px 12px",
-                    fontSize: "11px",
+                    padding: "4px 14px",
+                    fontSize: "12px",
                     color: "#f8fafc",
                     display: "flex",
                     alignItems: "center",
@@ -1008,16 +1336,16 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                 >
                   {scannedBarcode ? (
                     <>
-                      <span style={{ color: "#10b981", fontWeight: 700 }}>✅ Scanned:</span>
+                      <span style={{ color: "#10b981", fontWeight: 700 }}>✅ Filled in Barcode Box:</span>
                       <strong style={{ fontFamily: "'DM Mono', monospace", color: "#55d2ba" }}>{scannedBarcode}</strong>
                     </>
                   ) : isBarcodeCamActive ? (
                     <>
-                      <Icon name="refresh" size={12} className="animate-spin" style={{ color: "#55d2ba" }} />
-                      <span>Scanning for barcode...</span>
+                      <Icon name="refresh" size={13} className="animate-spin" style={{ color: "#55d2ba" }} />
+                      <span>Scanning for barcode in real-time...</span>
                     </>
                   ) : (
-                    <span>Camera 1 paused</span>
+                    <span>Scanner paused</span>
                   )}
                 </div>
               </div>
@@ -1026,11 +1354,11 @@ export const ScanPage: React.FC<ScanPageProps> = ({
               {scannedBarcode && (
                 <div
                   style={{
-                    marginTop: "10px",
+                    marginTop: "12px",
                     background: "#f0fdf4",
                     border: "1px solid #bbf7d0",
                     borderRadius: "8px",
-                    padding: "10px 14px",
+                    padding: "10px 16px",
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
@@ -1039,268 +1367,17 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <Badge type="green">BARCODE DETECTED</Badge>
+                    <Badge type="green">BARCODE FILLED</Badge>
                     <span style={{ fontFamily: "'DM Mono', monospace", fontWeight: 700, fontSize: "14px", color: "#15803d" }}>
                       {scannedBarcode}
                     </span>
                     <span style={{ fontSize: "11px", color: "#64748b" }}>({scannedBarcodeFormat || "EAN-13"})</span>
                   </div>
-                  <Button secondary onClick={handleBarcodeScanAgain} style={{ fontSize: "11px", padding: "4px 10px" }}>
-                    <Icon name="refresh" size={12} /> Scan Another
-                  </Button>
+                  <span style={{ fontSize: "11px", color: "#15803d", fontWeight: 600 }}>
+                    ✓ Auto-populated into Barcode Field
+                  </span>
                 </div>
               )}
-            </div>
-          )}
-
-          {/* =========================================================================
-              CAMERA 2: LABEL & EXPIRY DETAILS OCR SCANNER
-             ========================================================================= */}
-          {(activeTab === "dual" || activeTab === "label") && (
-            <div
-              style={{
-                background: "#fff",
-                border: "2px solid #3b82f6",
-                borderRadius: "14px",
-                padding: "16px 20px",
-                boxShadow: "0 4px 18px rgba(59, 130, 246, 0.08)",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "10px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <span style={{ fontSize: "20px" }}>📸</span>
-                  <div>
-                    <h3 style={{ fontSize: "15px", color: "#102b4e", margin: 0, fontWeight: 700 }}>
-                      Camera 2: Label &amp; Expiry OCR Scanner
-                    </h3>
-                    <p style={{ fontSize: "12px", color: "#64748b", margin: 0 }}>
-                      Point at package label to extract Packaging Date, Expiry Date, MRP, Net Qty &amp; Manufacturer
-                    </p>
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-                  <button
-                    type="button"
-                    onClick={() => setLabelFacing(labelFacing === "environment" ? "user" : "environment")}
-                    style={{
-                      background: "#f1f5f9",
-                      border: "1px solid #cbd5e1",
-                      borderRadius: "6px",
-                      padding: "4px 8px",
-                      fontSize: "11px",
-                      fontWeight: 600,
-                      color: "#334155",
-                      cursor: "pointer",
-                    }}
-                  >
-                    🔄 Flip
-                  </button>
-                  <label
-                    style={{
-                      background: "#f0f6f8",
-                      border: "1px solid #c9dce3",
-                      color: "#183b56",
-                      borderRadius: "6px",
-                      padding: "4px 10px",
-                      fontSize: "11px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "4px",
-                    }}
-                  >
-                    📁 Upload Photo
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleLabelFileUpload}
-                      style={{ display: "none" }}
-                    />
-                  </label>
-                </div>
-              </div>
-
-              {/* Viewfinder / Captured Image Display */}
-              {!selectedImageSrc ? (
-                <div
-                  style={{
-                    height: "280px",
-                    borderRadius: "10px",
-                    background: "#091726",
-                    position: "relative",
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    overflow: "hidden",
-                    border: "1px solid #234365",
-                  }}
-                >
-                  <video
-                    ref={labelVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      width: "100%",
-                      height: "100%",
-                      objectFit: "cover",
-                      display: isLabelCamActive ? "block" : "none",
-                    }}
-                  />
-
-                  {/* Framing reticle */}
-                  <div
-                    style={{
-                      position: "relative",
-                      width: "85%",
-                      maxWidth: "360px",
-                      height: "160px",
-                      border: "2px dashed #60a5fa",
-                      borderRadius: "10px",
-                      zIndex: 2,
-                      display: "flex",
-                      flexDirection: "column",
-                      justifyContent: "space-between",
-                      padding: "8px",
-                      boxShadow: "0 0 0 4000px rgba(9, 23, 38, 0.35)",
-                    }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontSize: "9px", color: "#93c5fd", background: "rgba(0,0,0,0.6)", padding: "2px 6px", borderRadius: "3px", fontWeight: 700 }}>
-                        LMPC Rule 6 Label Target
-                      </span>
-                      <span style={{ fontSize: "9px", color: "#e2e8f0", background: "rgba(0,0,0,0.6)", padding: "2px 6px", borderRadius: "3px" }}>
-                        OCR Viewfinder
-                      </span>
-                    </div>
-
-                    <div style={{ textAlign: "center", color: "#dbeafe", fontSize: "10px", background: "rgba(0,0,0,0.7)", padding: "3px 8px", borderRadius: "3px", alignSelf: "center" }}>
-                      Position PKD / Expiry / MRP declarations inside box
-                    </div>
-                  </div>
-
-                  {/* Snap Action Button Overlay */}
-                  <div style={{ position: "absolute", bottom: "14px", zIndex: 3 }}>
-                    <button
-                      type="button"
-                      onClick={handleSnapLabelFromCamera}
-                      style={{
-                        background: "#2563eb",
-                        color: "#fff",
-                        border: "none",
-                        borderRadius: "8px",
-                        padding: "8px 18px",
-                        fontWeight: 700,
-                        fontSize: "13px",
-                        cursor: "pointer",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "6px",
-                        boxShadow: "0 4px 14px rgba(37, 99, 235, 0.4)",
-                      }}
-                    >
-                      <Icon name="camera" size={16} /> 📸 Capture Label &amp; Run OCR
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                /* Selected Snapshot Preview with OCR scanning state */
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                      <Badge type="green">LABEL CAPTURED</Badge>
-                      <span style={{ fontSize: "11px", color: "#64748b" }}>{imageFileName}</span>
-                    </div>
-                    <Button
-                      secondary
-                      onClick={() => {
-                        setSelectedImageSrc(null)
-                        startLabelCameraInstance()
-                      }}
-                      style={{ fontSize: "11px", padding: "4px 8px" }}
-                    >
-                      <Icon name="refresh" size={12} /> Retake / Rescan
-                    </Button>
-                  </div>
-
-                  <div
-                    style={{
-                      maxHeight: "200px",
-                      overflow: "hidden",
-                      borderRadius: "8px",
-                      border: "1px solid #cbd5e1",
-                      background: "#0d1b2a",
-                      display: "flex",
-                      justifyContent: "center",
-                      alignItems: "center",
-                      position: "relative",
-                    }}
-                  >
-                    <img
-                      src={selectedImageSrc}
-                      alt="Captured Label"
-                      style={{ maxHeight: "200px", maxWidth: "100%", objectFit: "contain" }}
-                    />
-
-                    {isOcrProcessing && (
-                      <div
-                        style={{
-                          position: "absolute",
-                          inset: 0,
-                          background: "rgba(15, 23, 42, 0.8)",
-                          display: "flex",
-                          flexDirection: "column",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          color: "#fff",
-                          padding: "16px",
-                          backdropFilter: "blur(2px)",
-                        }}
-                      >
-                        <div className="laser-line" style={{ width: "80%", height: "2px", background: "#60a5fa", boxShadow: "0 0 10px #60a5fa", marginBottom: "12px" }} />
-                        <Icon name="refresh" size={24} className="animate-spin" style={{ color: "#93c5fd" }} />
-                        <b style={{ marginTop: "8px", fontSize: "13px" }}>{ocrProgress.status || "Extracting characters..."}</b>
-                        <div style={{ width: "50%", background: "rgba(255,255,255,0.2)", height: "5px", borderRadius: "3px", marginTop: "6px", overflow: "hidden" }}>
-                          <div style={{ width: `${Math.round(ocrProgress.progress * 100)}%`, background: "#60a5fa", height: "100%", transition: "width 0.3s ease" }} />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Sample Presets */}
-              <div style={{ marginTop: "12px", borderTop: "1px dashed #d8e3ea", paddingTop: "10px" }}>
-                <span style={{ fontSize: "11px", color: "#64748b", fontWeight: 700, textTransform: "uppercase" }}>
-                  Or test OCR with sample product labels:
-                </span>
-                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "6px" }}>
-                  {SAMPLE_PRESETS.map((preset, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => handleSelectPreset(preset)}
-                      style={{
-                        background: "#f0f6f8",
-                        border: "1px solid #c9dce3",
-                        padding: "4px 10px",
-                        borderRadius: "6px",
-                        fontSize: "11px",
-                        color: "#183b56",
-                        fontWeight: 600,
-                        cursor: "pointer",
-                      }}
-                    >
-                      🧪 {preset.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
             </div>
           )}
 
@@ -1324,7 +1401,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                     Detected Package Information
                   </h3>
                   <p style={{ fontSize: "12px", color: "#647589", margin: "2px 0 0" }}>
-                    Targeted statutory compliance fields extracted from Camera 2 &amp; OCR
+                    Targeted statutory compliance fields extracted from OCR Label Scanner
                   </p>
                 </div>
               </div>
@@ -1336,22 +1413,6 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                   </span>
                 )}
               </div>
-            </div>
-
-            <div
-              style={{
-                background: "#f0f8f6",
-                border: "1px solid #cce8e2",
-                borderRadius: "8px",
-                padding: "8px 12px",
-                fontSize: "12px",
-                color: "#08705a",
-                marginBottom: "14px",
-              }}
-            >
-              <span>
-                These 5 statutory fields are extracted from your label scan. You can edit any field before generating the official compliance dossier.
-              </span>
             </div>
 
             {/* 5 Targeted Fields Grid */}
@@ -1574,16 +1635,21 @@ export const ScanPage: React.FC<ScanPageProps> = ({
         <aside className="manual-card">
           <span className="or">SUMMARY</span>
           <h3>Commodity Declarations</h3>
-          <p>Combined from Camera 1 (Barcode) &amp; Camera 2 (OCR); fully editable.</p>
+          <p>Auto-filled from Barcode Scanner &amp; Label OCR; fully editable.</p>
 
-          <label htmlFor="barcode-field">Barcode Number (Camera 1)</label>
+          <label htmlFor="barcode-field">Barcode Number (Auto-filled from Scanner)</label>
           <input
             id="barcode-field"
             type="text"
             placeholder="e.g. 8901063012159"
             value={barcodeInput}
             onChange={(e) => setBarcodeInput(e.target.value)}
-            style={{ fontFamily: "'DM Mono', monospace", fontWeight: 700, borderColor: scannedBarcode ? "#10b981" : undefined }}
+            style={{
+              fontFamily: "'DM Mono', monospace",
+              fontWeight: 700,
+              borderColor: barcodeInput ? "#10b981" : undefined,
+              background: barcodeInput ? "#f0fdf4" : undefined,
+            }}
           />
 
           <label htmlFor="category-select" style={{ marginTop: "4px" }}>
