@@ -1,12 +1,20 @@
 import React, { useState, useEffect, useRef } from "react"
 import { Page, ProductData, User, ScanRecord, InspectionRecord, ImageQualityReport, ExtractedEntities, TargetedOcrResult } from "../types"
 import { Icon, Button, Badge } from "../components/Icons"
-import { DEFAULT_PRODUCT } from "../data/sampleProducts"
+import { DEFAULT_PRODUCT, SAMPLE_PRODUCTS } from "../data/sampleProducts"
 import { sqlDb } from "../db/sqlEngine"
 import { firebaseService } from "../firebase/firebaseService"
 import { analyzeFontCompliance, generateStatutoryCitations, deriveEnforcementRecommendation } from "../utils/fontCompliance"
 import { calculateTruthScore } from "../utils/complianceEngine"
 import { extractTextWithTesseract, analyzeImageQuality, parseStatutoryEntities, extractTargetedComplianceFields } from "../utils/ocrScanner"
+import {
+  startLiveBarcodeScanner,
+  validateBarcodeFormat,
+  getAvailableVideoDevices,
+  BarcodeScannerController,
+  VideoDeviceOption,
+  BarcodeDetectionResult,
+} from "../utils/barcodeScanner"
 
 interface ScanPageProps {
   setPage: (page: Page) => void
@@ -43,6 +51,13 @@ const SAMPLE_PRESETS = [
     image: "https://images.unsplash.com/photo-1622483767028-3f66f32aef97?auto=format&fit=crop&w=600&q=80",
     rawText: "THUMS UP CARBONATED BEVERAGE\nNET VOL: 750 ml\nMRP Rs. 40.00 (INCL. OF ALL TAXES)\nBATCH: TU-DEL-991\nMFD: 18/06/2026\nEXP: 18/12/2026\nMFD BY: HINDUSTAN COCA-COLA BEVERAGES PVT LTD, BIDADI, KARNATAKA - 562109\nCONSUMER CARE: 1800 208 2653 | indiahelpline@coca-cola.com\nCOUNTRY OF ORIGIN: INDIA\nBARCODE: 8901764012211",
   },
+]
+
+const SAMPLE_BARCODES = [
+  { label: "Britannia Good Day", code: "8901063012159", note: "GS1 India Compliant" },
+  { label: "Thums Up (750ml)", code: "8901764012211", note: "Overcharging Check" },
+  { label: "Amul Taaza Milk", code: "8901262010057", note: "Expired Batch" },
+  { label: "Unregistered Commodity", code: "8909999999999", note: "Test Unregistered State" },
 ]
 
 export const ScanPage: React.FC<ScanPageProps> = ({
@@ -91,7 +106,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
             Sign In to Scan Products
           </h1>
           <p style={{ color: "#647589", fontSize: "14px", lineHeight: "1.6", marginTop: "10px", maxWidth: "460px", margin: "10px auto 24px" }}>
-            To perform barcode compliance inspections, Tesseract.js OCR label checks, and save audit records to the SQL database, please sign in with your account.
+            To perform live barcode inspections, Tesseract.js OCR label checks, and save audit records to the SQL database, please sign in with your account.
           </p>
 
           <div style={{ display: "flex", gap: "12px", justifyContent: "center", flexWrap: "wrap" }}>
@@ -113,8 +128,10 @@ export const ScanPage: React.FC<ScanPageProps> = ({
 
   const isOfficer = currentUser?.role === "officer" || currentUser?.role === "admin" || currentUser?.email?.toLowerCase() === "thisisyashasvi@gmail.com"
 
-  const [method, setMethod] = useState<"photo" | "barcode" | "camera">("photo")
+  // Primary scanning mode: "camera" | "photo" | "barcode"
+  const [method, setMethod] = useState<"camera" | "photo" | "barcode">("camera")
   const [barcodeInput, setBarcodeInput] = useState<string>("")
+  const [manualSearchQuery, setManualSearchQuery] = useState<string>("")
   const [sellingPriceInput, setSellingPriceInput] = useState<string>("")
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false)
 
@@ -127,15 +144,26 @@ export const ScanPage: React.FC<ScanPageProps> = ({
   const [ocrConfidence, setOcrConfidence] = useState<number>(95)
   const [qualityReport, setQualityReport] = useState<ImageQualityReport | null>(null)
   const [extractedEntities, setExtractedEntities] = useState<ExtractedEntities>({})
+  const [targetedOcr, setTargetedOcr] = useState<TargetedOcrResult | null>(null)
+  const [showRawOcrDebug, setShowRawOcrDebug] = useState<boolean>(false)
 
   // Multi-image state
   const [uploadedFiles, setUploadedFiles] = useState<{ name: string; side: string; dataUrl?: string }[]>([])
 
-  // Live Camera state
+  // Live Camera & Barcode Scanner State
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const scannerControllerRef = useRef<BarcodeScannerController | null>(null)
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [cameraFacing, setCameraFacing] = useState<"environment" | "user">("environment")
+  const [videoDevices, setVideoDevices] = useState<VideoDeviceOption[]>([])
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("")
+
+  // Barcode Detection & Lookup State
+  const [detectedBarcode, setDetectedBarcode] = useState<string | null>(null)
+  const [detectedBarcodeFormat, setDetectedBarcodeFormat] = useState<string>("")
+  const [barcodeLookupState, setBarcodeLookupState] = useState<"idle" | "scanning" | "found" | "not_found">("scanning")
+  const [scannedProductMatch, setScannedProductMatch] = useState<ProductData | null>(null)
 
   // Custom Category & Product Details State
   const [selectedCategory, setSelectedCategory] = useState<string>("Food & Beverages")
@@ -161,80 +189,154 @@ export const ScanPage: React.FC<ScanPageProps> = ({
   const [merchantAddressInput, setMerchantAddressInput] = useState<string>("")
   const [inspectorNotesInput, setInspectorNotesInput] = useState<string>("")
 
-  // Start Live Camera stream
-  const startCamera = async () => {
-    setCameraError(null)
-    setIsCameraActive(true)
-    try {
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: cameraFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
-        })
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream
-          videoRef.current.play()
-        }
+  // Fetch available camera video devices on mount
+  useEffect(() => {
+    getAvailableVideoDevices().then((devs) => {
+      setVideoDevices(devs)
+      if (devs.length > 0 && !selectedDeviceId) {
+        setSelectedDeviceId(devs[0].deviceId)
       }
-    } catch (err: any) {
-      console.warn("Live camera access failed, operating in simulation mode:", err)
-      setCameraError("Camera access unavailable. Using optical viewfinder simulation.")
+    })
+  }, [])
+
+  // Helper to populate form fields from matched product
+  const populateFormWithProduct = (match: ProductData) => {
+    setSelectedProduct(match)
+    setProductNameInput(match.name)
+    setBrandInput(match.brand)
+    setMrpInput(match.mrp ? String(match.mrp) : "")
+    setNetQuantityInput(match.netQuantity || "")
+    setMfgDateInput(match.mfgDate || "")
+    setExpiryDateInput(match.expiryDate || "")
+    setBatchNumberInput(match.batchNumber || "")
+    setManufacturerNameInput(match.manufacturerName || "")
+    setConsumerCareInput(match.consumerCare || "")
+    setCountryOfOriginInput(match.countryOfOrigin || "India")
+
+    if (STANDARD_CATEGORIES.includes(match.category)) {
+      setSelectedCategory(match.category)
+      setIsCustomCategory(false)
+    } else {
+      setSelectedCategory("Other / Custom Category")
+      setCustomCategoryName(match.category)
+      setIsCustomCategory(true)
     }
   }
 
-  // Stop Camera stream
-  const stopCamera = () => {
+  // Handle detected barcode from live camera or manual lookup
+  const handleBarcodeIdentified = (code: string, formatName: string) => {
+    const cleanCode = code.trim()
+    setDetectedBarcode(cleanCode)
+    setDetectedBarcodeFormat(formatName || "EAN-13")
+    setBarcodeInput(cleanCode)
+    setManualSearchQuery(cleanCode)
+
+    // Lookup in database
+    const match = sqlDb.findProductByBarcode(cleanCode)
+    if (match) {
+      setScannedProductMatch(match)
+      setBarcodeLookupState("found")
+      populateFormWithProduct(match)
+    } else {
+      setScannedProductMatch(null)
+      setBarcodeLookupState("not_found")
+    }
+  }
+
+  // Live Camera Scanner Lifecycle
+  useEffect(() => {
+    if (method === "camera" && videoRef.current) {
+      setCameraError(null)
+      setIsCameraActive(true)
+      setBarcodeLookupState("scanning")
+
+      const controller = startLiveBarcodeScanner(
+        videoRef.current,
+        (result: BarcodeDetectionResult) => {
+          handleBarcodeIdentified(result.rawValue, result.format)
+        },
+        (errMsg: string) => {
+          setCameraError(errMsg)
+          setIsCameraActive(false)
+        },
+        selectedDeviceId || undefined,
+        cameraFacing
+      )
+
+      scannerControllerRef.current = controller
+
+      return () => {
+        controller.stop()
+        scannerControllerRef.current = null
+        setIsCameraActive(false)
+      }
+    } else {
+      if (scannerControllerRef.current) {
+        scannerControllerRef.current.stop()
+        scannerControllerRef.current = null
+      }
+      setIsCameraActive(false)
+    }
+  }, [method, cameraFacing, selectedDeviceId])
+
+  // Stop Camera explicitly
+  const handleCloseCamera = () => {
+    if (scannerControllerRef.current) {
+      scannerControllerRef.current.stop()
+      scannerControllerRef.current = null
+    }
     if (videoRef.current && videoRef.current.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream
       stream.getTracks().forEach((track) => track.stop())
       videoRef.current.srcObject = null
     }
     setIsCameraActive(false)
+    setBarcodeLookupState("idle")
   }
 
-  // Switch between camera modes
-  useEffect(() => {
-    if (method === "camera") {
-      startCamera()
-    } else {
-      stopCamera()
+  // Restart / Reset Scanner
+  const handleScanAgain = () => {
+    setDetectedBarcode(null)
+    setDetectedBarcodeFormat("")
+    setScannedProductMatch(null)
+    setBarcodeLookupState("scanning")
+    if (method === "camera" && !isCameraActive && videoRef.current) {
+      const controller = startLiveBarcodeScanner(
+        videoRef.current,
+        (result: BarcodeDetectionResult) => {
+          handleBarcodeIdentified(result.rawValue, result.format)
+        },
+        (errMsg: string) => {
+          setCameraError(errMsg)
+          setIsCameraActive(false)
+        },
+        selectedDeviceId || undefined,
+        cameraFacing
+      )
+      scannerControllerRef.current = controller
+      setIsCameraActive(true)
     }
-    return () => {
-      stopCamera()
-    }
-  }, [method, cameraFacing])
+  }
 
-  // Real-time SQL Barcode Matching
+  // Handle Manual Barcode Search
+  const handleManualSearch = (e?: React.FormEvent) => {
+    if (e) e.preventDefault()
+    const query = (manualSearchQuery || barcodeInput).trim()
+    if (!query) return
+
+    const validation = validateBarcodeFormat(query)
+    handleBarcodeIdentified(query, validation.format)
+  }
+
+  // Real-time SQL Barcode Matching for sidebar inputs
   useEffect(() => {
     if (barcodeInput && barcodeInput.trim().length >= 6) {
       const match = sqlDb.findProductByBarcode(barcodeInput.trim())
-      if (match) {
-        setSelectedProduct(match)
-        setProductNameInput(match.name)
-        setBrandInput(match.brand)
-        setMrpInput(match.mrp ? String(match.mrp) : "")
-        setNetQuantityInput(match.netQuantity || "")
-        setMfgDateInput(match.mfgDate || "")
-        setExpiryDateInput(match.expiryDate || "")
-        setBatchNumberInput(match.batchNumber || "")
-        setManufacturerNameInput(match.manufacturerName || "")
-        setConsumerCareInput(match.consumerCare || "")
-        setCountryOfOriginInput(match.countryOfOrigin || "India")
-
-        if (STANDARD_CATEGORIES.includes(match.category)) {
-          setSelectedCategory(match.category)
-          setIsCustomCategory(false)
-        } else {
-          setSelectedCategory("Other / Custom Category")
-          setCustomCategoryName(match.category)
-          setIsCustomCategory(true)
-        }
+      if (match && (!scannedProductMatch || scannedProductMatch.barcode !== match.barcode)) {
+        populateFormWithProduct(match)
       }
     }
-  }, [barcodeInput, setSelectedProduct])
-
-  // Targeted OCR Compliance State
-  const [targetedOcr, setTargetedOcr] = useState<TargetedOcrResult | null>(null)
-  const [showRawOcrDebug, setShowRawOcrDebug] = useState<boolean>(false)
+  }, [barcodeInput])
 
   // Synchronize Form Fields whenever Extracted Entities or Targeted OCR update
   const syncEntitiesToForm = (entities: ExtractedEntities, targeted?: TargetedOcrResult) => {
@@ -258,7 +360,10 @@ export const ScanPage: React.FC<ScanPageProps> = ({
     if (entities.batchNumber) setBatchNumberInput(entities.batchNumber)
     if (entities.consumerCare) setConsumerCareInput(entities.consumerCare)
     if (entities.countryOfOrigin) setCountryOfOriginInput(entities.countryOfOrigin)
-    if (entities.barcode) setBarcodeInput(entities.barcode)
+    if (entities.barcode) {
+      setBarcodeInput(entities.barcode)
+      setManualSearchQuery(entities.barcode)
+    }
   }
 
   // Update a specific targeted field inline with confidence bump
@@ -316,7 +421,6 @@ export const ScanPage: React.FC<ScanPageProps> = ({
     setIsOcrProcessing(true)
     setOcrProgress({ status: "Evaluating image quality & blur...", progress: 0.1 })
 
-    // Create an image element to analyze sharpness
     const img = new Image()
     img.crossOrigin = "anonymous"
     img.src = imageSrc
@@ -358,33 +462,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
     }
   }
 
-  // Handle Camera Capture Snap
-  const handleCameraSnap = () => {
-    let snapDataUrl = ""
-    const snapName = `live_camera_capture_${Date.now().toString().slice(-4)}.jpg`
-
-    if (videoRef.current && isCameraActive && !cameraError) {
-      const canvas = document.createElement("canvas")
-      canvas.width = videoRef.current.videoWidth || 640
-      canvas.height = videoRef.current.videoHeight || 480
-      const ctx = canvas.getContext("2d")
-      if (ctx) {
-        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height)
-        snapDataUrl = canvas.toDataURL("image/jpeg", 0.92)
-      }
-    }
-
-    if (!snapDataUrl) {
-      // High-resolution simulated camera capture
-      snapDataUrl = SAMPLE_PRESETS[0].image
-    }
-
-    setUploadedFiles((prev) => [...prev, { name: snapName, side: "Camera Snap", dataUrl: snapDataUrl }])
-    processImageForOcr(snapDataUrl, snapName)
-    setMethod("photo")
-  }
-
-  // Handle Rescan / Retake
+  // Handle Rescan / Retake in Photo mode
   const handleRescan = () => {
     setSelectedImageSrc(null)
     setRawOcrText("")
@@ -745,8 +823,8 @@ export const ScanPage: React.FC<ScanPageProps> = ({
       <div className="scan-heading">
         <div>
           <div className="section-label">LEGAL METROLOGY COMPLIANCE INSPECTION SUITE</div>
-          <h1>Tesseract.js OCR photo scanner &amp; label verifier</h1>
-          <p>Extract all visible label text accurately, preserve line breaks, and auto-detect Rule 6 mandatory declarations.</p>
+          <h1>Live Barcode &amp; OCR Statutory Inspection Suite</h1>
+          <p>Scan packaged commodity barcodes instantly or inspect label declarations with targeted OCR under Legal Metrology Rules 2011.</p>
         </div>
         <div className="secure-note">
           <Icon name="shield" />
@@ -760,30 +838,460 @@ export const ScanPage: React.FC<ScanPageProps> = ({
 
       {/* Main Scan Layout */}
       <div className="scan-layout" style={{ marginTop: "24px" }}>
-        {/* Left Scanning & OCR Panel */}
+        {/* Left Scanning Panel */}
         <section className="scan-panel">
+          {/* Tabs */}
           <div className="scan-tabs">
-            <button
-              className={method === "photo" ? "active" : ""}
-              onClick={() => setMethod("photo")}
-            >
-              <Icon name="file" /> Upload Product Photo
-            </button>
             <button
               className={method === "camera" ? "active" : ""}
               onClick={() => setMethod("camera")}
             >
-              <Icon name="camera" /> Live Camera Scanner
+              <Icon name="camera" /> 📷 Scan Barcode with Camera
+            </button>
+            <button
+              className={method === "photo" ? "active" : ""}
+              onClick={() => setMethod("photo")}
+            >
+              <Icon name="file" /> 🖼️ Upload Product Photo (OCR)
             </button>
             <button
               className={method === "barcode" ? "active" : ""}
               onClick={() => setMethod("barcode")}
             >
-              <Icon name="scan" /> Barcode Viewfinder
+              <Icon name="scan" /> ⌨️ Enter Barcode Manually
             </button>
           </div>
 
-          {/* Photo Upload Mode */}
+          {/* ========================================================
+              TAB 1: LIVE CAMERA BARCODE SCANNER MODE
+             ======================================================== */}
+          {method === "camera" && (
+            <div style={{ padding: "16px 20px" }}>
+              {/* Camera Header Toolbar */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "12px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <Badge type="blue">LIVE BARCODE VIEWFINDER</Badge>
+                  {isCameraActive && (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#0f8e7d", fontWeight: 600 }}>
+                      <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#10b981", animation: "pulse 1.5s infinite" }} />
+                      Continuous Detection Active
+                    </span>
+                  )}
+                </div>
+
+                {/* Device Selector & Flip */}
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  {videoDevices.length > 1 && (
+                    <select
+                      value={selectedDeviceId}
+                      onChange={(e) => setSelectedDeviceId(e.target.value)}
+                      style={{
+                        padding: "5px 10px",
+                        fontSize: "12px",
+                        borderRadius: "6px",
+                        border: "1px solid #cbd5e1",
+                        background: "#fff",
+                        color: "#1e293b",
+                        maxWidth: "180px",
+                      }}
+                    >
+                      {videoDevices.map((d) => (
+                        <option key={d.deviceId} value={d.deviceId}>
+                          {d.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setCameraFacing(cameraFacing === "environment" ? "user" : "environment")}
+                    style={{
+                      background: "#f1f5f9",
+                      border: "1px solid #cbd5e1",
+                      borderRadius: "6px",
+                      padding: "5px 10px",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      color: "#334155",
+                      cursor: "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "4px",
+                    }}
+                    title="Flip between Rear and Front cameras"
+                  >
+                    🔄 Flip Cam
+                  </button>
+
+                  {isCameraActive ? (
+                    <button
+                      type="button"
+                      onClick={handleCloseCamera}
+                      style={{
+                        background: "#fee2e2",
+                        border: "1px solid #fecaca",
+                        color: "#b91c1c",
+                        borderRadius: "6px",
+                        padding: "5px 10px",
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        cursor: "pointer",
+                      }}
+                    >
+                      ⏹️ Close Camera
+                    </button>
+                  ) : (
+                    <Button onClick={handleScanAgain} style={{ fontSize: "12px", padding: "5px 12px" }}>
+                      ▶️ Start Camera
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {/* Viewfinder Window */}
+              <div
+                style={{
+                  height: "360px",
+                  borderRadius: "14px",
+                  background: "#08131f",
+                  position: "relative",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "#fff",
+                  overflow: "hidden",
+                  border: "2px solid #1e3a5f",
+                  boxShadow: "0 8px 30px rgba(0,0,0,0.3)",
+                }}
+              >
+                {/* Video Element */}
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "cover",
+                    display: isCameraActive && !cameraError ? "block" : "none",
+                  }}
+                />
+
+                {/* Dark Vignette / Framing Overlay */}
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    background: "radial-gradient(ellipse at center, transparent 40%, rgba(8, 19, 31, 0.7) 100%)",
+                    pointerEvents: "none",
+                    zIndex: 1,
+                  }}
+                />
+
+                {/* Scanning Frame Reticle */}
+                <div
+                  style={{
+                    position: "relative",
+                    width: "75%",
+                    maxWidth: "340px",
+                    height: "180px",
+                    border: "2px solid rgba(85, 210, 186, 0.6)",
+                    borderRadius: "12px",
+                    zIndex: 2,
+                    display: "flex",
+                    flexDirection: "column",
+                    justifyContent: "space-between",
+                    padding: "10px",
+                    boxShadow: "0 0 0 4000px rgba(8, 19, 31, 0.35)",
+                  }}
+                >
+                  {/* Corner Targets */}
+                  <div style={{ position: "absolute", top: "-2px", left: "-2px", width: "20px", height: "20px", borderTop: "4px solid #55d2ba", borderLeft: "4px solid #55d2ba", borderRadius: "4px 0 0 0" }} />
+                  <div style={{ position: "absolute", top: "-2px", right: "-2px", width: "20px", height: "20px", borderTop: "4px solid #55d2ba", borderRight: "4px solid #55d2ba", borderRadius: "0 4px 0 0" }} />
+                  <div style={{ position: "absolute", bottom: "-2px", left: "-2px", width: "20px", height: "20px", borderBottom: "4px solid #55d2ba", borderLeft: "4px solid #55d2ba", borderRadius: "0 0 0 4px" }} />
+                  <div style={{ position: "absolute", bottom: "-2px", right: "-2px", width: "20px", height: "20px", borderBottom: "4px solid #55d2ba", borderRight: "4px solid #55d2ba", borderRadius: "0 0 4px 0" }} />
+
+                  {/* Animated Laser Scan Beam */}
+                  {isCameraActive && !detectedBarcode && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: "5%",
+                        width: "90%",
+                        height: "2px",
+                        background: "#55d2ba",
+                        boxShadow: "0 0 14px 2px #55d2ba",
+                        animation: "scanPulse 2s infinite ease-in-out",
+                        top: "50%",
+                      }}
+                    />
+                  )}
+
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: "10px", color: "#7ce5cf", background: "rgba(0,0,0,0.6)", padding: "2px 6px", borderRadius: "4px", fontWeight: 700 }}>
+                      EAN-13 / UPC / Code 128
+                    </span>
+                    <span style={{ fontSize: "10px", color: "#e2e8f0", background: "rgba(0,0,0,0.6)", padding: "2px 6px", borderRadius: "4px" }}>
+                      GS1 India
+                    </span>
+                  </div>
+
+                  <div style={{ textAlign: "center", color: "#cbd5e1", fontSize: "11px", background: "rgba(0,0,0,0.7)", padding: "4px 8px", borderRadius: "4px", alignSelf: "center" }}>
+                    {detectedBarcode ? `Target Locked` : `Align commodity barcode inside frame`}
+                  </div>
+                </div>
+
+                {/* Status Indicator */}
+                <div
+                  style={{
+                    position: "absolute",
+                    bottom: "16px",
+                    zIndex: 3,
+                    background: "rgba(15, 23, 42, 0.85)",
+                    border: "1px solid rgba(85, 210, 186, 0.4)",
+                    borderRadius: "20px",
+                    padding: "6px 16px",
+                    fontSize: "12px",
+                    color: "#f8fafc",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    backdropFilter: "blur(4px)",
+                  }}
+                >
+                  {detectedBarcode ? (
+                    <>
+                      <span style={{ color: "#10b981", fontWeight: 700 }}>✅ Barcode detected:</span>
+                      <strong style={{ fontFamily: "'DM Mono', monospace", color: "#55d2ba", letterSpacing: "1px" }}>{detectedBarcode}</strong>
+                    </>
+                  ) : isCameraActive ? (
+                    <>
+                      <Icon name="refresh" size={14} className="animate-spin" style={{ color: "#55d2ba" }} />
+                      <span>Scanning for barcode...</span>
+                    </>
+                  ) : (
+                    <span>Camera is paused. Click "Start Camera" to scan.</span>
+                  )}
+                </div>
+
+                {/* Camera Permission / Error Fallback */}
+                {cameraError && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      background: "rgba(15, 23, 42, 0.95)",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      padding: "20px",
+                      textAlign: "center",
+                      zIndex: 10,
+                    }}
+                  >
+                    <Icon name="alert" size={36} style={{ color: "#f87171", marginBottom: "10px" }} />
+                    <h3 style={{ fontSize: "16px", color: "#f8fafc", margin: "0 0 6px" }}>Camera Access Note</h3>
+                    <p style={{ fontSize: "12px", color: "#94a3b8", maxWidth: "380px", margin: "0 0 16px" }}>
+                      {cameraError}
+                    </p>
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <Button onClick={handleScanAgain} style={{ fontSize: "12px" }}>
+                        Retry Camera
+                      </Button>
+                      <Button secondary onClick={() => setMethod("barcode")} style={{ fontSize: "12px" }}>
+                        Enter Barcode Manually
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ========================================================
+                  DETECTED BARCODE PRODUCT IDENTIFICATION CARDS
+                 ======================================================== */}
+              {detectedBarcode && (
+                <div style={{ marginTop: "16px" }}>
+                  {barcodeLookupState === "found" && scannedProductMatch ? (
+                    /* Product Found in Database Card */
+                    <div
+                      style={{
+                        background: "#f0fdf4",
+                        border: "2px solid #22c55e",
+                        borderRadius: "12px",
+                        padding: "16px 20px",
+                        boxShadow: "0 4px 16px rgba(34, 197, 94, 0.12)",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "8px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <div style={{ width: "36px", height: "36px", borderRadius: "50%", background: "#dcfce7", color: "#15803d", display: "grid", placeItems: "center" }}>
+                            <Icon name="check" size={20} />
+                          </div>
+                          <div>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                              <Badge type="green">✅ PRODUCT FOUND IN MASTER DATABASE</Badge>
+                              <span style={{ fontSize: "11px", color: "#64748b" }}>{detectedBarcodeFormat}</span>
+                            </div>
+                            <h3 style={{ fontSize: "17px", color: "#0f172a", margin: "4px 0 2px", fontWeight: 700 }}>
+                              {scannedProductMatch.name}
+                            </h3>
+                            <p style={{ fontSize: "12px", color: "#475569", margin: 0 }}>
+                              Brand: <b>{scannedProductMatch.brand}</b> · Category: <b>{scannedProductMatch.category}</b>
+                            </p>
+                          </div>
+                        </div>
+
+                        <div style={{ textAlign: "right" }}>
+                          <span style={{ fontSize: "11px", color: "#64748b" }}>Barcode Number</span>
+                          <div style={{ fontFamily: "'DM Mono', monospace", fontWeight: 700, fontSize: "14px", color: "#0f172a" }}>
+                            {scannedProductMatch.barcode}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Mini Key Attributes Pill Row */}
+                      <div style={{ display: "flex", gap: "10px", marginTop: "12px", flexWrap: "wrap" }}>
+                        <div style={{ background: "#fff", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 12px", fontSize: "12px" }}>
+                          <span style={{ color: "#64748b" }}>Declared MRP:</span> <b>₹{scannedProductMatch.mrp?.toFixed(2) || "N/A"}</b>
+                        </div>
+                        <div style={{ background: "#fff", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 12px", fontSize: "12px" }}>
+                          <span style={{ color: "#64748b" }}>Net Quantity:</span> <b>{scannedProductMatch.netQuantity || "100 g"}</b>
+                        </div>
+                        <div style={{ background: "#fff", border: "1px solid #bbf7d0", borderRadius: "6px", padding: "6px 12px", fontSize: "12px" }}>
+                          <span style={{ color: "#64748b" }}>Manufacturer:</span> <b>{scannedProductMatch.manufacturerName?.slice(0, 30)}...</b>
+                        </div>
+                      </div>
+
+                      {/* Action CTA Buttons */}
+                      <div style={{ display: "flex", gap: "10px", marginTop: "14px", alignItems: "center", flexWrap: "wrap" }}>
+                        <Button
+                          onClick={handleAnalyse}
+                          style={{
+                            background: "#0f8e7d",
+                            color: "#fff",
+                            padding: "10px 18px",
+                            fontSize: "13px",
+                            fontWeight: 700,
+                            boxShadow: "0 2px 8px rgba(15, 142, 125, 0.3)",
+                          }}
+                        >
+                          Proceed to Compliance Inspection <Icon name="arrow" size={15} />
+                        </Button>
+                        <Button secondary onClick={handleScanAgain} style={{ fontSize: "12px", padding: "10px 14px" }}>
+                          <Icon name="refresh" size={14} /> Scan Another Barcode
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Product Not Found in Database Card (Unregistered Commodity Notification) */
+                    <div
+                      style={{
+                        background: "#fffbeb",
+                        border: "2px solid #f59e0b",
+                        borderRadius: "12px",
+                        padding: "16px 20px",
+                        boxShadow: "0 4px 16px rgba(245, 158, 11, 0.12)",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
+                        <div style={{ width: "36px", height: "36px", borderRadius: "50%", background: "#fef3c7", color: "#b45309", display: "grid", placeItems: "center", flexShrink: 0 }}>
+                          <Icon name="alert" size={20} />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                            <Badge type="amber">⚠️ PRODUCT NOT FOUND IN DATABASE</Badge>
+                            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: "12px", fontWeight: 700, color: "#92400e" }}>
+                              Barcode: {detectedBarcode}
+                            </span>
+                          </div>
+
+                          <h3 style={{ fontSize: "15px", color: "#78350f", margin: "6px 0 4px", fontWeight: 700 }}>
+                            Unregistered Commodity Detected
+                          </h3>
+
+                          <p style={{ fontSize: "13px", color: "#92400e", lineHeight: "1.5", margin: "0 0 12px" }}>
+                            This product barcode (<b>{detectedBarcode}</b>) is not yet registered in the central PackSure master catalog.
+                            <br />
+                            <span style={{ fontSize: "12px", color: "#78350f" }}>
+                              ℹ️ <i>Note: An unregistered barcode is <b>not</b> an automatic legal metrology violation. Please scan the label text using OCR or enter the declarations manually.</i>
+                            </span>
+                          </p>
+
+                          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                            <Button
+                              onClick={() => {
+                                setMethod("photo")
+                                setBarcodeInput(detectedBarcode)
+                              }}
+                              style={{ fontSize: "12px", padding: "8px 16px" }}
+                            >
+                              <Icon name="file" size={14} /> Scan Label with OCR
+                            </Button>
+                            <Button
+                              secondary
+                              onClick={() => {
+                                const inputEl = document.getElementById("product-name-field")
+                                if (inputEl) inputEl.focus()
+                              }}
+                              style={{ fontSize: "12px", padding: "8px 14px" }}
+                            >
+                              ✏️ Enter Details Manually
+                            </Button>
+                            <Button secondary onClick={handleScanAgain} style={{ fontSize: "12px", padding: "8px 12px" }}>
+                              <Icon name="refresh" size={13} /> Scan Again
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Quick Sample Barcodes Helper */}
+              <div style={{ marginTop: "20px", borderTop: "1px dashed #d8e3ea", paddingTop: "14px" }}>
+                <span style={{ fontSize: "11px", color: "#64748b", fontWeight: 700, textTransform: "uppercase" }}>
+                  Test with catalog product barcodes:
+                </span>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "8px" }}>
+                  {SAMPLE_BARCODES.map((item, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => handleBarcodeIdentified(item.code, "EAN-13")}
+                      style={{
+                        background: "#f1f5f9",
+                        border: "1px solid #cbd5e1",
+                        padding: "6px 12px",
+                        borderRadius: "6px",
+                        fontSize: "11px",
+                        color: "#1e293b",
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                      }}
+                    >
+                      <span>🏷️</span>
+                      <b>{item.label}</b>
+                      <code style={{ fontSize: "10px", color: "#0f8e7d" }}>({item.code})</code>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ========================================================
+              TAB 2: UPLOAD PRODUCT PHOTO (TARGETED OCR) MODE
+             ======================================================== */}
           {method === "photo" && (
             <div className="upload-box" style={{ position: "relative", padding: "24px 20px" }}>
               {!selectedImageSrc ? (
@@ -824,7 +1332,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
                     </label>
 
                     <Button secondary onClick={() => setMethod("camera")}>
-                      <Icon name="camera" size={15} /> Use Camera
+                      <Icon name="camera" size={15} /> 📷 Use Live Barcode Camera
                     </Button>
                   </div>
 
@@ -946,132 +1454,117 @@ export const ScanPage: React.FC<ScanPageProps> = ({
             </div>
           )}
 
-          {/* Live Camera Scanner Mode */}
-          {method === "camera" && (
-            <div
-              style={{
-                height: "340px",
-                margin: "16px",
-                borderRadius: "12px",
-                background: "#091726",
-                position: "relative",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "#fff",
-                overflow: "hidden",
-                border: "2px solid #234365",
-              }}
-            >
-              {/* Video Element for live webcam */}
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                muted
-                style={{
-                  position: "absolute",
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "cover",
-                  display: isCameraActive && !cameraError ? "block" : "none",
-                }}
-              />
-
-              {/* Viewfinder Reticle Overlay */}
-              <div
-                style={{
-                  position: "absolute",
-                  inset: "20px",
-                  border: "2px dashed #55d2ba",
-                  borderRadius: "12px",
-                  pointerEvents: "none",
-                  display: "flex",
-                  flexDirection: "column",
-                  justifyContent: "space-between",
-                  padding: "12px",
-                  zIndex: 2,
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <Badge type="blue">OCR VIEWFINDER</Badge>
-                  <span style={{ fontSize: "11px", color: "#7ce5cf", background: "rgba(0,0,0,0.6)", padding: "2px 8px", borderRadius: "4px" }}>
-                    LMPC Rule 6 Alignment Target
-                  </span>
-                </div>
-                <div style={{ textAlign: "center", color: "#b9dfd8", fontSize: "11px", background: "rgba(0,0,0,0.6)", padding: "4px 8px", borderRadius: "4px", alignSelf: "center" }}>
-                  Position package label inside frame and press Capture
-                </div>
-              </div>
-
-              {/* Laser Scan Line */}
-              <div
-                style={{
-                  position: "absolute",
-                  width: "80%",
-                  height: "2px",
-                  background: "#55d2ba",
-                  boxShadow: "0 0 12px #55d2ba",
-                  animation: "scanPulse 2s infinite ease-in-out",
-                  top: "40%",
-                  zIndex: 2,
-                }}
-              />
-
-              {/* Camera Controls Bar */}
-              <div style={{ position: "absolute", bottom: "16px", zIndex: 3, display: "flex", gap: "10px", alignItems: "center" }}>
-                <button
-                  type="button"
-                  onClick={handleCameraSnap}
-                  style={{
-                    background: "#0f8e7d",
-                    color: "#fff",
-                    border: "none",
-                    borderRadius: "8px",
-                    padding: "10px 20px",
-                    fontWeight: 700,
-                    fontSize: "13px",
-                    cursor: "pointer",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    boxShadow: "0 4px 12px rgba(15, 142, 125, 0.4)",
-                  }}
-                >
-                  <Icon name="camera" size={16} /> Capture Label Snapshot
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setCameraFacing(cameraFacing === "environment" ? "user" : "environment")}
-                  style={{
-                    background: "rgba(255, 255, 255, 0.2)",
-                    color: "#fff",
-                    border: "1px solid rgba(255, 255, 255, 0.4)",
-                    borderRadius: "8px",
-                    padding: "10px 14px",
-                    fontSize: "12px",
-                    cursor: "pointer",
-                  }}
-                >
-                  🔄 Flip
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Barcode Mock Mode */}
+          {/* ========================================================
+              TAB 3: MANUAL BARCODE ENTRY & LOOKUP MODE
+             ======================================================== */}
           {method === "barcode" && (
-            <div className="barcode-zone">
-              <div className="barcode-large">||| | |||| || |||</div>
-              <p style={{ fontFamily: "'DM Mono', monospace", fontWeight: 700, color: "#102b4e" }}>
-                {barcodeInput || "Enter barcode in details panel"}
-              </p>
-              <p style={{ margin: "4px 0 16px" }}>Position the product barcode inside the frame</p>
-              <Button secondary onClick={() => setMethod("camera")}>
-                <Icon name="camera" size={16} /> Open camera viewfinder
-              </Button>
+            <div style={{ padding: "24px 20px" }}>
+              <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "12px", padding: "20px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+                  <Icon name="scan" size={20} style={{ color: "#0f8e7d" }} />
+                  <h3 style={{ fontSize: "16px", color: "#102b4e", margin: 0, fontWeight: 700 }}>
+                    Enter Barcode Manually
+                  </h3>
+                </div>
+                <p style={{ fontSize: "13px", color: "#64748b", margin: "0 0 16px" }}>
+                  Type an 8–14 digit EAN / UPC barcode to instantly retrieve registered commodity specifications.
+                </p>
+
+                <form onSubmit={handleManualSearch} style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                  <input
+                    type="text"
+                    placeholder="Enter 13-digit EAN (e.g. 8901063012159)"
+                    value={manualSearchQuery}
+                    onChange={(e) => {
+                      setManualSearchQuery(e.target.value)
+                      setBarcodeInput(e.target.value)
+                    }}
+                    style={{
+                      flex: 1,
+                      minWidth: "240px",
+                      padding: "10px 14px",
+                      fontSize: "14px",
+                      fontFamily: "'DM Mono', monospace",
+                      fontWeight: 600,
+                      borderRadius: "8px",
+                      border: "1px solid #cbd5e1",
+                    }}
+                  />
+                  <Button type="submit" style={{ padding: "10px 20px" }}>
+                    <Icon name="search" size={16} /> Search Product
+                  </Button>
+                </form>
+
+                {/* Quick Presets */}
+                <div style={{ marginTop: "16px", display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: "11px", color: "#64748b", fontWeight: 700 }}>Sample Presets:</span>
+                  {SAMPLE_BARCODES.map((item, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => handleBarcodeIdentified(item.code, "EAN-13")}
+                      style={{
+                        background: "#fff",
+                        border: "1px solid #cbd5e1",
+                        padding: "4px 10px",
+                        borderRadius: "6px",
+                        fontSize: "11px",
+                        color: "#1e293b",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {item.label} ({item.code.slice(-5)})
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Display Lookup Results for Manual Mode */}
+              {detectedBarcode && (
+                <div style={{ marginTop: "16px" }}>
+                  {barcodeLookupState === "found" && scannedProductMatch ? (
+                    <div
+                      style={{
+                        background: "#f0fdf4",
+                        border: "2px solid #22c55e",
+                        borderRadius: "12px",
+                        padding: "16px 20px",
+                      }}
+                    >
+                      <Badge type="green">✅ PRODUCT FOUND IN MASTER DATABASE</Badge>
+                      <h3 style={{ fontSize: "17px", color: "#0f172a", margin: "6px 0 2px", fontWeight: 700 }}>
+                        {scannedProductMatch.name}
+                      </h3>
+                      <p style={{ fontSize: "12px", color: "#475569", margin: "0 0 10px" }}>
+                        Brand: <b>{scannedProductMatch.brand}</b> · MRP: <b>₹{scannedProductMatch.mrp?.toFixed(2)}</b> · Net Qty: <b>{scannedProductMatch.netQuantity}</b>
+                      </p>
+                      <Button onClick={handleAnalyse} style={{ fontSize: "12px", padding: "8px 16px" }}>
+                        Proceed to Compliance Inspection <Icon name="arrow" size={14} />
+                      </Button>
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        background: "#fffbeb",
+                        border: "2px solid #f59e0b",
+                        borderRadius: "12px",
+                        padding: "16px 20px",
+                      }}
+                    >
+                      <Badge type="amber">⚠️ PRODUCT NOT FOUND</Badge>
+                      <h3 style={{ fontSize: "15px", color: "#78350f", margin: "6px 0 4px", fontWeight: 700 }}>
+                        Unregistered Commodity ({detectedBarcode})
+                      </h3>
+                      <p style={{ fontSize: "12px", color: "#92400e", margin: "0 0 10px" }}>
+                        This product is not registered in the database. Please scan the label text using OCR or enter the details manually. (Not an automatic violation).
+                      </p>
+                      <Button onClick={() => setMethod("photo")} style={{ fontSize: "12px", padding: "8px 14px" }}>
+                        <Icon name="file" size={14} /> Scan Label with OCR
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -1415,35 +1908,6 @@ export const ScanPage: React.FC<ScanPageProps> = ({
             )}
           </div>
 
-          {/* Rule 7 & 9 Font-Height & PDP Parameters Box */}
-          <div style={{ background: "#f8fafc", border: "1px solid #dce4eb", borderRadius: "8px", padding: "14px", marginTop: "16px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <b style={{ fontSize: "12px", color: "#102b4e" }}>Rule 7 &amp; 9 Font-Height Verification Parameters</b>
-              <Badge type="blue">LMPC Table 1</Badge>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginTop: "10px" }}>
-              <div>
-                <label style={{ fontSize: "11px", color: "#607384", fontWeight: 700 }}>Principal Display Panel Area (cm²):</label>
-                <input
-                  type="number"
-                  value={pdpAreaInput}
-                  onChange={(e) => setPdpAreaInput(e.target.value)}
-                  style={{ width: "100%", padding: "6px 8px", fontSize: "12px", margin: "2px 0 0", border: "1px solid #cbd8e1", borderRadius: "6px" }}
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: "11px", color: "#607384", fontWeight: 700 }}>Detected Numeral Height (mm):</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={detectedFontHeightInput}
-                  onChange={(e) => setDetectedFontHeightInput(e.target.value)}
-                  style={{ width: "100%", padding: "6px 8px", fontSize: "12px", margin: "2px 0 0", border: "1px solid #cbd8e1", borderRadius: "6px" }}
-                />
-              </div>
-            </div>
-          </div>
-
           <p className="guidance" style={{ marginTop: "14px" }}>
             <Icon name="alert" size={17} />
             <span>
@@ -1456,7 +1920,7 @@ export const ScanPage: React.FC<ScanPageProps> = ({
         <aside className="manual-card">
           <span className="or">OR</span>
           <h3>Product &amp; Mandatory Declarations</h3>
-          <p>Auto-filled from OCR or barcode; fully editable by user/inspector.</p>
+          <p>Auto-filled from barcode or OCR; fully editable by user/inspector.</p>
 
           <label htmlFor="barcode-field">Barcode number (8–14 digits)</label>
           <input
@@ -1464,7 +1928,10 @@ export const ScanPage: React.FC<ScanPageProps> = ({
             type="text"
             placeholder="e.g. 8901063012159"
             value={barcodeInput}
-            onChange={(e) => setBarcodeInput(e.target.value)}
+            onChange={(e) => {
+              setBarcodeInput(e.target.value)
+              setManualSearchQuery(e.target.value)
+            }}
           />
 
           {/* Product Category */}
